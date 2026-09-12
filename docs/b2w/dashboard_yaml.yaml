@@ -1,0 +1,73 @@
+  superset:
+    image: apache/superset:latest
+    container_name: superset
+    depends_on:
+      superset-db:
+        condition: service_healthy
+      superset-init:
+        condition: service_completed_successfully
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      DATABASE_DIALECT: postgresql+psycopg2
+      DATABASE_DB: superset
+      DATABASE_HOST: superset-db
+      DATABASE_PASSWORD: ${SUPERSET_DB_PASSWORD}
+      DATABASE_USER: superset
+      DATABASE_PORT: 5432
+    ports:
+      - "127.0.0.1:8088:8088"
+    command:
+      - gunicorn
+      - "--bind"
+      - "0.0.0.0:8088"
+      - "--workers"
+      - "2"
+      - "--timeout"
+      - "120"
+      - "superset.app:create_app()"
+    volumes:
+      - superset_home:/app/superset_home
+    restart: unless-stopped
+
+  superset-init:
+    image: apache/superset:latest
+    depends_on:
+      superset-db:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      DATABASE_DIALECT: postgresql+psycopg2
+      DATABASE_DB: superset
+      DATABASE_HOST: superset-db
+      DATABASE_PASSWORD: ${SUPERSET_DB_PASSWORD}
+      DATABASE_USER: superset
+      DATABASE_PORT: 5432
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        superset db upgrade
+        superset fab create-admin \
+          --username admin \
+          --firstname Admin \
+          --lastname User \
+          --email admin@example.com \
+          --password "$$SUPERSET_ADMIN_PASSWORD" || true
+        superset init
+
+  superset-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: superset
+      POSTGRES_USER: superset
+      POSTGRES_PASSWORD: ${SUPERSET_DB_PASSWORD}
+    volumes:
+      - superset_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superset -d superset"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
