@@ -218,6 +218,11 @@ DEFAULT_TIME_FILTER = utils.NO_TIME_RANGE
 # (gunicorn, nginx, apache, ...) timeout setting to be <= to this setting
 SUPERSET_WEBSERVER_TIMEOUT = int(timedelta(minutes=1).total_seconds())
 
+# Server-only settings for the dashboard's Ask Jason chat pane.
+OPENCLAW_GATEWAY_URL = os.environ.get("OPENCLAW_GATEWAY_URL", "")
+OPENCLAW_GATEWAY_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+OPENCLAW_AGENT_ID = os.environ.get("OPENCLAW_AGENT_ID", "main")
+
 # this 2 settings are used by dashboard period force refresh feature
 # When user choose auto force refresh frequency
 # < SUPERSET_DASHBOARD_PERIODICAL_REFRESH_LIMIT
