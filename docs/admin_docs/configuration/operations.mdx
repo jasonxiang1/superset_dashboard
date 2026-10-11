@@ -32,6 +32,37 @@ theme; it leaves browser zoom available.
 Existing dashboards, the dashboard builder, SQL Lab, charts, filters, and OpenClaw
 chat retain their existing routes and behavior.
 
+Task assignees can be selected from active workers or entered as a free-form
+name. Selecting a name does not create a project worker assignment. Client
+receivable values remain in the financial source but are not displayed in the
+Operations interface.
+
+Daily Brief includes multiple dated summary updates alongside task and labor
+metrics. Margin is not displayed. Use **View all updates for date** to select a
+day; all matching updates are loaded across API pages. **Add summary** saves a
+title, date and plain-text body to PostgreSQL. Existing create/edit/remove/restore
+capabilities also apply to summaries, including revision checks and audit history.
+
+Provision the additive `operations_summaries` table before using summaries on an
+existing deployment. The table has the shared UUID/workspace/revision/lifecycle
+fields plus `summary_date`, `title` (maximum 200 characters), `body` (maximum 8000
+characters), and `source` (`manual` or `postgresql`). Multiple records can share
+a date. Summaries do not require a project. Manual API creation assigns `manual`
+server-side; API clients cannot change source. Business-data integrations can
+insert records with `postgresql` as source into the configured Operations schema.
+Both sources are displayed together and editable by authorized Operations editors.
+Integration writes must provide UUIDs, workspace, revision and timezone-aware
+timestamps, and increment revision when updating existing records to avoid stale
+manual edits. Direct database imports do not automatically create API audit events.
+The interface does not automatically summarize arbitrary database tables.
+
+The summary list endpoint is
+`/api/v1/operations/workspaces/{workspace_uuid}/summaries?summary_date=YYYY-MM-DD`.
+It supports the existing pagination and archive parameters. Omitting the date
+returns summaries across dates. The configured business timezone determines the
+default day; selecting another date filters written summaries, while the existing
+task metrics continue to describe the business day displayed above them.
+
 ## Configuration
 
 Configure these server-side settings in `superset_config.py`:

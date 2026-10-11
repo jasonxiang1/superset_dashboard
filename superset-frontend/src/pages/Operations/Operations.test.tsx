@@ -24,9 +24,11 @@ import {
   waitFor,
   userEvent,
   within,
+  fireEvent,
 } from 'spec/helpers/testing-library';
 import Operations from '.';
 import RecordForm from './RecordForm';
+import SummaryUpdates from './SummaryUpdates';
 import {
   getSettings,
   getBrief,
@@ -115,6 +117,7 @@ beforeEach(() => {
     labor_entries: [],
     workers: [],
     attachments: [],
+    summaries: [],
   };
   jest
     .mocked(listAll)
@@ -136,7 +139,8 @@ function renderPage(path = '/operations/brief/') {
 test('daily brief uses real metrics and persists completion before refreshing', async () => {
   renderPage();
   const checkbox = await screen.findByRole('checkbox', { name: 'Call client' });
-  expect(screen.getAllByText('Unavailable')).toHaveLength(2);
+  expect(screen.getAllByText('Unavailable')).toHaveLength(1);
+  expect(screen.queryByText('Margin')).not.toBeInTheDocument();
   await userEvent.click(checkbox);
   await waitFor(() =>
     expect(changeRecord).toHaveBeenCalledWith(
@@ -160,6 +164,7 @@ test('projects navigate into status bins and expandable details without graphs',
     await screen.findByRole('button', { name: 'Log hours' }),
   ).toBeVisible();
   expect(screen.getByRole('button', { name: 'Add note' })).toBeVisible();
+  expect(screen.queryByText(/Client owes:/)).not.toBeInTheDocument();
 });
 
 test('read-only users have no mutation controls', async () => {
@@ -236,6 +241,135 @@ test('task edits send only mutable fields and the displayed revision', async () 
   expect(payload).not.toHaveProperty('id');
   expect(payload).not.toHaveProperty('workspace_id');
   expect(payload).not.toHaveProperty('status');
+});
+
+test.each(['worker', 'custom'])(
+  'task creation saves a %s assignee name',
+  async mode => {
+    render(
+      <RecordForm
+        dialog={{ resource: 'tasks', projectId: project.id }}
+        workspace="workspace-1"
+        projects={[project]}
+        workers={[
+          { ...base, id: 'worker-1', name: 'Alex Carpenter' },
+          {
+            ...base,
+            id: 'worker-2',
+            name: 'Archived Worker',
+            archived_at: base.updated_at,
+          },
+        ]}
+        day={brief.day}
+        onClose={jest.fn()}
+        onSaved={jest.fn()}
+      />,
+      { useTheme: true },
+    );
+    await userEvent.type(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'New task',
+    );
+    const assignee = screen.getByRole('combobox', { name: 'Assignee' });
+    await userEvent.click(assignee);
+    expect(screen.queryByText('Archived Worker')).not.toBeInTheDocument();
+    if (mode === 'worker') {
+      await userEvent.type(assignee, 'alex');
+      await userEvent.click(
+        await screen.findByText('Alex Carpenter', {
+          selector: '.ant-select-item-option-content',
+        }),
+      );
+    } else {
+      await userEvent.type(assignee, 'Outside Contractor');
+    }
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(saveRecord).toHaveBeenCalled());
+    expect(jest.mocked(saveRecord).mock.calls[0][2]).toMatchObject({
+      project_id: project.id,
+      assignee_name:
+        mode === 'worker' ? 'Alex Carpenter' : 'Outside Contractor',
+    });
+  },
+);
+
+test('summary date selection shows all manual and PostgreSQL updates for a day', async () => {
+  jest
+    .mocked(listAll)
+    .mockImplementation(async (_workspace, resource, options) => {
+      if (resource !== 'summaries' || options?.summaryDate !== '2026-10-10')
+        return [];
+      return [
+        {
+          ...base,
+          id: 'summary-1',
+          summary_date: '2026-10-10',
+          title: 'Morning update',
+          body: 'Crew arrived',
+          source: 'manual',
+        },
+        {
+          ...base,
+          id: 'summary-2',
+          summary_date: '2026-10-10',
+          title: 'Afternoon update',
+          body: 'Inspection passed',
+          source: 'postgresql',
+        },
+      ];
+    });
+  render(
+    <SummaryUpdates
+      workspace="workspace-1"
+      day="2026-10-10"
+      capabilities={settings.capabilities}
+    />,
+    { useTheme: true },
+  );
+  expect(await screen.findByText('Morning update')).toBeVisible();
+  expect(screen.getByText('Afternoon update')).toBeVisible();
+  expect(screen.getByText('Manual entry')).toBeVisible();
+  expect(screen.getByText('PostgreSQL integration')).toBeVisible();
+  fireEvent.change(screen.getByLabelText('View all updates for date'), {
+    target: { value: '2026-10-11' },
+  });
+  expect(await screen.findByText('No summaries for this date')).toBeVisible();
+  expect(screen.queryByText('Morning update')).not.toBeInTheDocument();
+});
+
+test('manual summary saves its selected date and text without project or source fields', async () => {
+  render(
+    <RecordForm
+      dialog={{ resource: 'summaries' }}
+      workspace="workspace-1"
+      projects={[]}
+      workers={[]}
+      day="2026-10-10"
+      onClose={jest.fn()}
+      onSaved={jest.fn()}
+    />,
+    { useTheme: true },
+  );
+  await userEvent.type(
+    screen.getByRole('textbox', { name: 'Title' }),
+    'General update',
+  );
+  await userEvent.type(
+    screen.getByRole('textbox', { name: 'Summary' }),
+    'Materials arrived.',
+  );
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(saveRecord).toHaveBeenCalled());
+  const [, resource, payload] = jest.mocked(saveRecord).mock.calls[0];
+  expect(resource).toBe('summaries');
+  expect(payload).toMatchObject({
+    title: 'General update',
+    body: 'Materials arrived.',
+    summary_date: '2026-10-10',
+  });
+  expect(payload).not.toHaveProperty('source');
+  expect(payload).not.toHaveProperty('project_id');
+  expect(payload).not.toHaveProperty('description');
 });
 
 test('ambiguous note creation retries the identical payload and request UUID', async () => {

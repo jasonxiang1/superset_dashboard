@@ -36,8 +36,10 @@ Resource = Literal[
     "assignments",
     "workers",
     "attachments",
+    "summaries",
 ]
 Record = dict[str, object]
+TOP_LEVEL_RESOURCES = {"projects", "workers", "summaries"}
 
 
 class OperationsError(Exception):
@@ -93,6 +95,7 @@ class OperationsRepository:
             "assignments": self.tables.assignments,
             "workers": self.tables.workers,
             "attachments": self.tables.attachments,
+            "summaries": self.tables.summaries,
         }[resource]
 
     def _load(
@@ -121,18 +124,23 @@ class OperationsRepository:
         limit: int,
         offset: int,
         project_id: UUID | None = None,
+        summary_date: date | None = None,
     ) -> list[Record]:
         """List bounded current-state records without exposing audit history."""
         table = self._table(resource)
         statement = select(table).where(table.c.workspace_id == self.workspace_id)
+        if summary_date is not None:
+            if resource != "summaries":
+                raise OperationsError(400, "Date filtering applies only to summaries.")
+            statement = statement.where(table.c.summary_date == summary_date)
         if project_id is not None:
-            if resource in {"projects", "workers"}:
+            if resource in TOP_LEVEL_RESOURCES:
                 raise OperationsError(400, "This resource has no project filter.")
             self._load("projects", project_id)
             statement = statement.where(table.c.project_id == project_id)
         if not archived:
             statement = statement.where(table.c.archived_at.is_(None))
-            if resource not in {"projects", "workers"}:
+            if resource not in TOP_LEVEL_RESOURCES:
                 project = self.tables.projects
                 statement = statement.join(
                     project,
@@ -280,7 +288,9 @@ class OperationsRepository:
                 )
             return cast(Record, previous["result"])
         occurred_at = datetime.now(timezone.utc)
-        if resource not in {"projects", "workers"}:
+        if resource == "summaries":
+            attributes["source"] = "manual"
+        if resource not in TOP_LEVEL_RESOURCES:
             project_id = cast(UUID, attributes["project_id"])
             self._active_project(project_id)
             if resource == "tasks":
@@ -321,7 +331,7 @@ class OperationsRepository:
         action: Literal["edit", "archive", "restore", "complete"],
     ) -> Record:
         """Apply a revision-checked mutation with audit in the same transaction."""
-        if resource not in {"projects", "workers"}:
+        if resource not in TOP_LEVEL_RESOURCES:
             # Lock parent before child in every mutation to avoid archive/write races.
             task = self._load(resource, record_id)
             self._active_project(cast(UUID, task["project_id"]))
@@ -364,7 +374,7 @@ class OperationsRepository:
             .values(**changes)
         )
         after = {**before, **changes}
-        if resource not in {"projects", "workers"}:
+        if resource not in TOP_LEVEL_RESOURCES:
             self._touch_project(cast(UUID, before["project_id"]), occurred_at)
         self._audit(resource, action, before, after)
         return serialize(after)

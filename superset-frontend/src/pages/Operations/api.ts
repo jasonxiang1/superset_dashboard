@@ -65,7 +65,12 @@ export const getHistory = (
 export const listRecords = <R extends Resource>(
   workspace: string,
   resource: R,
-  options: { projectId?: string; archived?: boolean; offset?: number } = {},
+  options: {
+    projectId?: string;
+    archived?: boolean;
+    offset?: number;
+    summaryDate?: string;
+  } = {},
   signal?: AbortSignal,
 ) => {
   const query = new URLSearchParams({
@@ -74,6 +79,7 @@ export const listRecords = <R extends Resource>(
     include_archived: String(Boolean(options.archived)),
   });
   if (options.projectId) query.set('project_id', options.projectId);
+  if (options.summaryDate) query.set('summary_date', options.summaryDate);
   return getResult<RecordMap[R][]>(
     `${prefix(workspace)}/${resource}?${query}`,
     signal,
@@ -157,7 +163,11 @@ export function formatMoney(
 export async function listAll<R extends Resource>(
   workspace: string,
   resource: R,
-  options: { projectId?: string; archived?: boolean } = {},
+  options: {
+    projectId?: string;
+    archived?: boolean;
+    summaryDate?: string;
+  } = {},
   signal?: AbortSignal,
 ): Promise<RecordMap[R][]> {
   const result: RecordMap[R][] = [];

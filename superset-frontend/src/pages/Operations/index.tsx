@@ -59,6 +59,7 @@ import {
 import RecordForm, { statusLabels } from './RecordForm';
 import RecordActions from './RecordActions';
 import ProjectDetails from './ProjectDetails';
+import SummaryUpdates from './SummaryUpdates';
 
 interface Data {
   workspace: string;
@@ -260,16 +261,6 @@ export default function Operations() {
                     ),
                   },
                   {
-                    title: t('Margin'),
-                    value:
-                      current.brief.margin_percent == null
-                        ? t('Unavailable')
-                        : `${Number(current.brief.margin_percent).toLocaleString()}%`,
-                    help: t(
-                      'Gross margin across all recorded work: revenue less non-labor costs and unvoided labor costs. Requires complete financial source data.',
-                    ),
-                  },
-                  {
                     title: t('Open jobs'),
                     value: String(current.brief.open_jobs),
                     help: t(
@@ -277,7 +268,7 @@ export default function Operations() {
                     ),
                   },
                 ].map(item => (
-                  <Col key={item.title} xs={24} sm={12} lg={6}>
+                  <Col key={item.title} xs={24} sm={8}>
                     <Card size="small">
                       <Flex justify="space-between" align="center">
                         <Typography.Text>{item.title}</Typography.Text>
@@ -298,6 +289,12 @@ export default function Operations() {
                   </Col>
                 ))}
               </Row>
+              <SummaryUpdates
+                key={workspace}
+                workspace={workspace}
+                day={current.brief.day}
+                capabilities={settings.capabilities}
+              />
               <Card title={t('Today’s commitments')}>
                 <Progress
                   percent={
@@ -456,17 +453,6 @@ export default function Operations() {
                                     </Typography.Text>
                                   </Flex>
                                   <Flex gap="middle" wrap>
-                                    <Typography.Text
-                                      style={{ color: theme.colorSuccess }}
-                                    >
-                                      {t(
-                                        'Client owes: %s',
-                                        formatMoney(
-                                          financial?.client_receivable,
-                                          current.brief.currency,
-                                        ),
-                                      )}
-                                    </Typography.Text>
                                     <Typography.Text
                                       style={{ color: theme.colorError }}
                                     >

@@ -49,6 +49,12 @@ export interface ProjectNote extends BaseRecord {
   project_id: string;
   body: string;
 }
+export interface SummaryUpdate extends BaseRecord {
+  summary_date: string;
+  title: string;
+  body: string;
+  source: 'manual' | 'postgresql';
+}
 export interface Assignment extends BaseRecord {
   project_id: string;
   worker_id: string;
@@ -79,6 +85,7 @@ export interface RecordMap {
   labor_entries: LaborEntry;
   workers: Worker;
   attachments: Attachment;
+  summaries: SummaryUpdate;
 }
 export type Resource = keyof RecordMap;
 export type WritableResource = Exclude<Resource, 'workers' | 'attachments'>;

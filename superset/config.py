@@ -690,7 +690,7 @@ CURRENCIES = ["USD", "EUR", "GBP", "INR", "MXN", "JPY", "CNY"]
 DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     # Enables the experimental operations workspace and PostgreSQL API
     # @lifecycle: development
-    "OPERATIONS_ENABLED": False,
+    "OPERATIONS_ENABLED": True,
     # =================================================================
     # IN DEVELOPMENT
     # =================================================================

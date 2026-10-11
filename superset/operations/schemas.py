@@ -84,6 +84,23 @@ class TaskCreateSchema(Schema):
     due_at = fields.AwareDateTime(allow_none=True, load_default=None)
 
 
+class SummaryCreateSchema(Schema):
+    """Create a dated plain-text summary; provenance is assigned server-side."""
+
+    request_id = fields.UUID(required=True)
+    summary_date = fields.Date(required=True)
+    title = fields.String(required=True, validate=[validate.Length(max=200), nonblank])
+    body = fields.String(required=True, validate=[validate.Length(max=8000), nonblank])
+
+
+class SummaryUpdateSchema(UpdateSchema):
+    """Edit a summary without changing its identity or source."""
+
+    summary_date = fields.Date()
+    title = fields.String(validate=[validate.Length(max=200), nonblank])
+    body = fields.String(validate=[validate.Length(max=8000), nonblank])
+
+
 class TaskUpdateSchema(UpdateSchema):
     """Editable task fields; completion has a separately authorized endpoint."""
 

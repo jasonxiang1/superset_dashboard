@@ -85,6 +85,22 @@ class OperationsTables:
             Column("name", String(200), nullable=False),
             UniqueConstraint("workspace_id", "id"),
         )
+        self.summaries = Table(
+            "operations_summaries",
+            self.metadata,
+            *self._record_columns(),
+            Column("summary_date", Date, nullable=False),
+            Column("title", String(200), nullable=False),
+            Column("body", Text, nullable=False),
+            Column("source", String(20), nullable=False),
+            CheckConstraint("revision > 0"),
+            CheckConstraint("source IN ('manual', 'postgresql')"),
+        )
+        Index(
+            "ix_operations_summaries_day",
+            self.summaries.c.workspace_id,
+            self.summaries.c.summary_date,
+        )
         self.rates = Table(
             "operations_worker_rates",
             self.metadata,
@@ -187,6 +203,7 @@ class OperationsTables:
             self.labor_entries,
             self.workers,
             self.attachments,
+            self.summaries,
         ):
             Index(f"ix_{table.name}_activity", table.c.workspace_id, table.c.updated_at)
 

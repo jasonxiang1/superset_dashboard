@@ -20,6 +20,7 @@ import logging
 import re
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from datetime import date
 from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfoNotFoundError
@@ -47,6 +48,8 @@ from superset.operations.schemas import (
     ProjectCreateSchema,
     ProjectUpdateSchema,
     RevisionSchema,
+    SummaryCreateSchema,
+    SummaryUpdateSchema,
     TaskCompletionSchema,
     TaskCreateSchema,
     TaskUpdateSchema,
@@ -64,6 +67,7 @@ READ_RESOURCES = {
     "assignments",
     "workers",
     "attachments",
+    "summaries",
 }
 CREATE_SCHEMAS: dict[str, type[Schema]] = {
     "projects": ProjectCreateSchema,
@@ -71,12 +75,14 @@ CREATE_SCHEMAS: dict[str, type[Schema]] = {
     "notes": NoteCreateSchema,
     "labor_entries": LaborCreateSchema,
     "assignments": AssignmentCreateSchema,
+    "summaries": SummaryCreateSchema,
 }
 UPDATE_SCHEMAS: dict[str, type[Schema]] = {
     "projects": ProjectUpdateSchema,
     "tasks": TaskUpdateSchema,
     "notes": NoteUpdateSchema,
     "labor_entries": LaborUpdateSchema,
+    "summaries": SummaryUpdateSchema,
 }
 
 
@@ -187,6 +193,8 @@ class OperationsRestApi(BaseSupersetApi):
         LaborCreateSchema,
         LaborUpdateSchema,
         AssignmentCreateSchema,
+        SummaryCreateSchema,
+        SummaryUpdateSchema,
     )
 
     def _run(
@@ -305,6 +313,11 @@ class OperationsRestApi(BaseSupersetApi):
             try:
                 limit = int(request.args.get("limit", "50"))
                 offset = int(request.args.get("offset", "0"))
+                summary_date = (
+                    date.fromisoformat(request.args["summary_date"])
+                    if request.args.get("summary_date")
+                    else None
+                )
                 project_id = (
                     UUID(request.args["project_id"])
                     if request.args.get("project_id")
@@ -325,6 +338,7 @@ class OperationsRestApi(BaseSupersetApi):
                 limit=limit,
                 offset=offset,
                 project_id=project_id,
+                summary_date=summary_date,
             )
 
         return self._run(workspace_id, read)

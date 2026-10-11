@@ -21,6 +21,7 @@ import { useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import { t } from '@apache-superset/core/translation';
 import {
+  AutoComplete,
   Button,
   Form,
   FormItem,
@@ -45,6 +46,7 @@ export const resourceLabels = {
   labor_entries: t('Labor entry'),
   notes: t('Project note'),
   assignments: t('Worker assignment'),
+  summaries: t('Summary update'),
 };
 interface Values {
   title?: string;
@@ -58,6 +60,7 @@ interface Values {
   minutes?: number;
   note?: string;
   body?: string;
+  summary_date?: string;
 }
 function localDateTime(iso: string | null): string {
   if (!iso) return '';
@@ -69,9 +72,8 @@ function localDateTime(iso: string | null): string {
 function formValues(record?: WritableRecord): Values {
   if (!record) return {};
   return {
-    ...('title' in record
-      ? { title: record.title, description: record.description }
-      : {}),
+    ...('title' in record ? { title: record.title } : {}),
+    ...('description' in record ? { description: record.description } : {}),
     ...('status' in record ? { status: record.status } : {}),
     ...('due_at' in record
       ? {
@@ -88,6 +90,7 @@ function formValues(record?: WritableRecord): Values {
         }
       : {}),
     ...('body' in record ? { body: record.body } : {}),
+    ...('summary_date' in record ? { summary_date: record.summary_date } : {}),
   };
 }
 interface Props {
@@ -124,6 +127,7 @@ export default function RecordForm({
   const isTask = resource === 'tasks';
   const isLabor = resource === 'labor_entries';
   const isAssignment = resource === 'assignments';
+  const isSummary = resource === 'summaries';
   const required = [{ required: true, message: t('This field is required.') }];
 
   const submit = async (values: Values) => {
@@ -221,10 +225,11 @@ export default function RecordForm({
           ...(isProject || isTask ? { description: '' } : {}),
           ...(isProject ? { status: 'planned' } : {}),
           ...(isLabor ? { note: '', work_date: day } : {}),
+          ...(isSummary ? { summary_date: day } : {}),
           ...formValues(record),
         }}
       >
-        {!isProject && !record && !projectId && (
+        {!isProject && !isSummary && !record && !projectId && (
           <FormItem label={t('Project')} name="project_id" rules={required}>
             <Select
               aria-label={t('Project')}
@@ -234,7 +239,7 @@ export default function RecordForm({
             />
           </FormItem>
         )}
-        {(isProject || isTask) && (
+        {(isProject || isTask || isSummary) && (
           <>
             <FormItem
               label={t('Title')}
@@ -243,12 +248,14 @@ export default function RecordForm({
             >
               <Input maxLength={200} />
             </FormItem>
-            <FormItem label={t('Description')} name="description">
-              <Input.TextArea
-                maxLength={8000}
-                autoSize={{ minRows: 2, maxRows: 6 }}
-              />
-            </FormItem>
+            {!isSummary && (
+              <FormItem label={t('Description')} name="description">
+                <Input.TextArea
+                  maxLength={8000}
+                  autoSize={{ minRows: 2, maxRows: 6 }}
+                />
+              </FormItem>
+            )}
           </>
         )}
         {isProject && (
@@ -264,8 +271,31 @@ export default function RecordForm({
         )}
         {isTask && (
           <>
-            <FormItem label={t('Assignee')} name="assignee_name">
-              <Input maxLength={200} />
+            <FormItem
+              label={t('Assignee')}
+              name="assignee_name"
+              rules={[{ max: 200 }]}
+            >
+              <AutoComplete
+                options={Array.from(
+                  new Set(
+                    workers
+                      .filter(worker => !worker.archived_at)
+                      .map(worker => worker.name),
+                  ),
+                ).map(name => ({ value: name }))}
+                filterOption={(input, option) =>
+                  String(option?.value ?? '')
+                    .toLowerCase()
+                    .includes(input.toLowerCase())
+                }
+                allowClear
+              >
+                <Input
+                  maxLength={200}
+                  placeholder={t('Select a worker or type a name')}
+                />
+              </AutoComplete>
             </FormItem>
             <FormItem label={t('Due time (device timezone)')} name="due_at">
               <Input type="datetime-local" />
@@ -305,9 +335,18 @@ export default function RecordForm({
             </FormItem>
           </>
         )}
-        {resource === 'notes' && (
+        {isSummary && (
           <FormItem
-            label={t('Note')}
+            label={t('Summary date')}
+            name="summary_date"
+            rules={required}
+          >
+            <Input type="date" />
+          </FormItem>
+        )}
+        {(resource === 'notes' || isSummary) && (
+          <FormItem
+            label={isSummary ? t('Summary') : t('Note')}
             name="body"
             rules={[...required, { whitespace: true }]}
           >
