@@ -1,0 +1,254 @@
+---
+title: Operations persistence API
+---
+
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.-->
+
+# Operations persistence API
+
+The experimental Operations API stores projects and operational tasks in a
+connected PostgreSQL business database. It is an additive, disabled-by-default
+workspace for Daily Brief and Projects. It includes project/task management,
+labor logging, project notes, worker assignment, recoverable removal and audit
+history. Open `/operations/brief/` or `/operations/projects/` through the
+Operations navigation entry. The responsive layout uses the existing light/dark
+theme; it leaves browser zoom available.
+Existing dashboards, the dashboard builder, SQL Lab, charts, filters, and OpenClaw
+chat retain their existing routes and behavior.
+
+## Configuration
+
+Configure these server-side settings in `superset_config.py`:
+
+```python
+FEATURE_FLAGS = {"OPERATIONS_ENABLED": True}
+OPERATIONS_DATABASE_UUID = "<UUID of an existing Superset database connection>"
+OPERATIONS_SCHEMA = "business_operations"
+OPERATIONS_TIMEZONE = "America/Los_Angeles"
+OPERATIONS_CURRENCY = "USD"
+OPERATIONS_FINANCIALS_ENABLED = False
+OPERATIONS_WORKSPACE_NAMES = {"<workspace UUID>": "Workshop"}
+OPERATIONS_WORKSPACE_ROLES = {
+    "<workspace UUID>": ["Operations Editor", "Operations Reader"],
+}
+```
+
+The schema name must be a lowercase PostgreSQL identifier. A missing connection,
+schema, or required table returns an unavailable response; there is no mock-data
+fallback. Restart Superset after changing registration settings and run
+`superset init` to synchronize permissions. The API is registered only when
+`OPERATIONS_ENABLED` is enabled and also checks the flag on every request.
+
+Configure explicit Operations capabilities on custom roles:
+
+| Capability | Action |
+| --- | --- |
+| `can_read` on Operations | Read records; required for all other actions |
+| `menu_access` on Operations | Show the Operations navigation entry |
+| `can_create` on Operations | Create projects and tasks |
+| `can_log_labor` on Operations | Create labor entries |
+| `can_add_note` on Operations | Create project notes |
+| `can_assign` on Operations | Assign existing workers to projects |
+| `can_edit` on Operations | Edit project, task, note or labor fields |
+| `can_complete` on Operations | Complete or reopen tasks |
+| `can_remove` on Operations | Archive projects, tasks, notes, labor entries and assignments |
+| `can_restore` on Operations | Restore archived records |
+
+Assign the Operations role alongside the user's existing baseline role, such as
+Gamma, so shared application navigation and logging permissions remain available.
+Operations grants do not replace the user's existing Superset roles.
+
+Users also need access to the configured database and membership in a role
+listed for the workspace. Admin may use any configured workspace. Anonymous and
+embedded guest principals are excluded. Stock Gamma and Alpha roles do not
+receive Operations capabilities during role synchronization. Write requests
+require the connection's `allow_dml` setting and PostgreSQL credentials with the
+necessary table privileges.
+
+Workspace scope is enforced by the operations repository on every read and
+write. Direct adapter queries do not apply Superset dataset RLS. Configure
+workspace roles only for users entitled to all operational records in that
+workspace; database or dataset access alone does not grant Operations access.
+
+## External schema contract
+
+The adapter expects these tables in the configured schema:
+
+- `operations_projects`: UUID, workspace UUID, title, description, status,
+  revision, creation/activity timestamps, archive timestamp.
+- `operations_tasks`: UUID, workspace UUID, parent project UUID, title,
+  description, optional assignee display name, optional aware deadline,
+  completion state/time, revision, creation/activity/archive timestamps.
+- `operations_workers`: read-only worker directory with UUID, workspace UUID,
+  display name, revision and lifecycle timestamps.
+- `operations_worker_rates`: read-only rate history with worker UUID, effective
+  date, hourly rate and currency. Rates apply until the next effective date.
+- `operations_assignments`: recoverable project/worker links; one active
+  assignment per project/worker pair.
+- `operations_labor_entries`: worker, project, work date, minutes, note, preserved
+  hourly rate, currency and calculated cost, plus revision/lifecycle timestamps.
+- `operations_notes`: project, plain-text body and revision/lifecycle timestamps.
+- `operations_attachments`: read-only project/filename/URL references and lifecycle
+  timestamps. Only HTTP(S) URLs are linked; no files are uploaded or fetched by
+  the backend.
+- `operations_project_financials`: optional read-only snapshots keyed by workspace
+  and project: revenue, non-labor cost, client receivable, labor paid and currency.
+  This table is read only when `OPERATIONS_FINANCIALS_ENABLED` is true.
+- `operations_audit`: UUID, workspace, resource, record UUID, actor identifier,
+  action, timestamp, before/after snapshots.
+- `operations_requests`: workspace and request UUID, actor, payload fingerprint,
+  original creation response.
+
+Definitions and constraints are in `superset/operations/tables.py`. Runtime API
+requests never create schemas or tables, insert sample data, or run Superset
+metadata migrations against the business database. Mapping existing production
+tables to this contract requires a reviewed adapter or external migration before
+enabling the feature. This stage does not infer or modify existing table layouts.
+
+For a new, explicitly provisioned business schema, an operator can create the
+empty canonical tables through a configured connection in a Superset application
+context:
+
+```python
+from sqlalchemy.schema import CreateSchema
+from superset.daos.database import DatabaseDAO
+from superset.operations.tables import OperationsTables
+from uuid import UUID
+
+connection = DatabaseDAO.find_one_or_none(uuid=UUID(OPERATIONS_DATABASE_UUID))
+with connection.get_sqla_engine() as engine:
+    with engine.begin() as transaction:
+        transaction.execute(CreateSchema(OPERATIONS_SCHEMA))
+        OperationsTables(OPERATIONS_SCHEMA).metadata.create_all(transaction)
+```
+
+Provisioning is separate from application startup. This creates empty tables,
+not fixture records. Task assignee names are display labels, not authenticated identities or permission
+boundaries. Labor entries and assignments reference the explicit worker directory.
+The directory, rate history, attachment URLs and financial snapshots must be
+populated by the business-data integration; the application does not invent them.
+
+## API contract
+
+All routes begin with `/api/v1/operations/workspaces/{workspace_uuid}`.
+Read resources are `projects`, `tasks`, `notes`, `labor_entries`, `assignments`,
+`workers`, and `attachments`. Workers and attachments are read-only. Assignments
+are created or removed/restored; changing a worker means removing the old
+assignment and adding another.
+
+| Method | Suffix | Result |
+| --- | --- | --- |
+| GET | `/settings` (at `/api/v1/operations`) | Authorized workspace names and capabilities |
+| GET | `/brief` | Today's tasks and calculated summaries |
+| GET | `/{resource}` | Paginated current records |
+| GET | `/{resource}/{record_uuid}` | Current record, including archive state |
+| POST | `/{resource}` | Create or replay original creation response |
+| PATCH | `/{resource}/{record_uuid}` | Edit allowed fields |
+| POST | `/{resource}/{record_uuid}/archive` | Recoverable removal |
+| POST | `/{resource}/{record_uuid}/restore` | Recover archived record |
+| POST | `/tasks/{record_uuid}/completion` | Complete or reopen task |
+| GET | `/{resource}/{record_uuid}/history` | Audit snapshots, requiring edit permission |
+
+List parameters are `limit` (1–100, default 50), `offset` (0–100000, default 0),
+and `include_archived` (`true` or `false`, default `false`). Lists sort by latest
+activity, then UUID. Current task lists exclude children of archived projects;
+including archived records reveals their current state but never audit history.
+Child lists accept `project_id` as a scoped UUID filter. The UI traverses list
+pages to display complete status groups and project details.
+
+Project creation accepts `request_id`, `title`, `description`, and `status`.
+Status is one of `planned`, `in_progress`, `on_hold`, `completed`, or `cancelled`.
+Notes accept a required nonblank `body`. Assignments accept `project_id` and
+`worker_id`. Labor entries accept `project_id`, `worker_id`, `work_date`, `minutes`
+(1–1440), and an optional `note`. These creates also require `request_id`.
+Costs and rates are server-owned fields. The worker must be actively assigned
+when creating an entry or moving it to another worker. Editing an existing
+entry's duration retains its rate snapshot even after unassignment. Changing the
+worker or work date resolves the historical rate again. Costs round half-up to
+two decimal places. Removing a labor entry voids it; restoring retains its
+snapshot. Notes render as text rather than HTML.
+
+Task creation accepts `request_id`, `project_id`, `title`, `description`,
+`assignee_name`, and `due_at`. Deadlines require an explicit timezone.
+
+Create requests require a fresh UUID `request_id` for each intended submission.
+Retries must reuse the same UUID and content. Concurrent retries create one
+record and one audit entry. Reusing a request ID with different content or actor
+returns 409. A replay returns the original response, so clients should refetch
+current state after replay if the record may have changed.
+
+Edits, archive/restore actions, and task completion require the last observed
+integer `revision`. Stale revisions return 409. A completion request contains
+only `revision` and a boolean `completed`. General task edits cannot change
+completion, parent project, workspace, or identity.
+
+Each mutation and its audit entry commit in one external PostgreSQL transaction.
+Task changes also advance the parent project's activity time and revision.
+Archiving a project preserves its tasks, audit and financial source records;
+restore the project before mutating its tasks. Completion survives task
+archive/restore. There is no permanent-delete endpoint. Audit snapshots, author identifiers and
+change timestamps are exposed only through the edit-protected history endpoint.
+History pagination uses batches of 50 and a bounded `offset`.
+Current-state responses normalize timestamps to UTC and omit audit actor identifiers.
+
+Invalid inputs return 400, missing records return 404, permission failures return
+401/403, conflicts return 409, excessive bodies return 413, and unavailable
+connections/tables return 503. SQL error details are not sent to clients.
+
+## KPI definitions
+
+- **Items for today** counts unarchived tasks due between local midnights in
+  `OPERATIONS_TIMEZONE`, belonging to unarchived projects. Completed tasks remain
+  in the count and contribute to completion progress. The brief returns the first
+  100 tasks; Projects provides complete task lists.
+- **Open jobs** counts unarchived projects excluding completed/cancelled statuses.
+- **Labor due** sums each project's unvoided accrued labor cost less its recorded
+  labor payments, with each payable floored at zero.
+- **Margin** is gross margin over all recorded work: `(revenue - non-labor costs
+  - unvoided labor costs) / revenue`. It is unavailable for nonpositive revenue.
+
+Financial metrics include archived projects so archiving cannot erase costs or
+balances. Enable the financial source only after complete snapshots are available
+for every project in the workspace and all amounts use `OPERATIONS_CURRENCY`.
+Incomplete snapshots produce unavailable summary totals; mismatched currencies
+fail explicitly. Without a configured financial source, labor due, margin and
+client receivables display **Unavailable**, while logged labor retains its known
+rate and cost. These are operational gross metrics, not a general ledger.
+
+## Tests and fixture cleanup
+
+Run validation and permission tests through the repository's Python test setup.
+To include real PostgreSQL persistence and HTTP write tests, supply a disposable
+test database:
+
+```bash
+export OPERATIONS_TEST_DATABASE_URI="postgresql+psycopg2://..."
+pytest tests/unit_tests/operations tests/unit_tests/openclaw/api_test.py
+```
+
+PostgreSQL tests skip when that variable is absent. They allocate unique
+`operations_test_<UUID>` schemas and drop only the schema allocated by each
+fixture. Use a test database whose credentials permit creating these schemas.
+Fixture records and DDL remain in test code and are never imported by the runtime
+API. No test seed or mock adapter is included in production source.
+
+Coverage includes committed writes across connections, rollback on audit failure,
+workspace isolation, simultaneous duplicate submissions, concurrent stale edits,
+parent archive constraints, archive/recovery, input validation, action-level HTTP
+permissions, and existing OpenClaw behavior.

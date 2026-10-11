@@ -76,6 +76,12 @@
         "description": "Serve a consumption-only mobile experience (dashboards, dashboard list, and home page) on small screens; other views show a \"not supported on mobile\" screen. Authoring features are hidden on mobile when enabled."
       },
       {
+        "name": "OPERATIONS_ENABLED",
+        "default": false,
+        "lifecycle": "development",
+        "description": "Enables the experimental operations workspace and PostgreSQL API"
+      },
+      {
         "name": "OPTIMIZE_SQL",
         "default": false,
         "lifecycle": "development",

@@ -1786,6 +1786,8 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     }
 
     ADMIN_ONLY_VIEW_MENUS = {
+        # Business-record access requires explicit grants to custom roles.
+        "Operations",
         "Access Requests",
         "Action Logs",
         "Extensions",

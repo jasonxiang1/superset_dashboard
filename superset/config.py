@@ -223,6 +223,17 @@ OPENCLAW_GATEWAY_URL = os.environ.get("OPENCLAW_GATEWAY_URL", "")
 OPENCLAW_GATEWAY_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
 OPENCLAW_AGENT_ID = os.environ.get("OPENCLAW_AGENT_ID", "main")
 
+# Operations uses an explicitly provisioned schema in a connected business DB.
+OPERATIONS_DATABASE_UUID: str | None = None
+OPERATIONS_SCHEMA: str | None = None
+# Workspace UUID -> explicitly authorized Superset role names.
+OPERATIONS_WORKSPACE_ROLES: dict[str, list[str]] = {}
+OPERATIONS_WORKSPACE_NAMES: dict[str, str] = {}
+OPERATIONS_TIMEZONE = "UTC"
+OPERATIONS_CURRENCY = "USD"
+# Enable only after provisioning and mapping the financial snapshot source.
+OPERATIONS_FINANCIALS_ENABLED = False
+
 # this 2 settings are used by dashboard period force refresh feature
 # When user choose auto force refresh frequency
 # < SUPERSET_DASHBOARD_PERIODICAL_REFRESH_LIMIT
@@ -677,6 +688,9 @@ CURRENCIES = ["USD", "EUR", "GBP", "INR", "MXN", "JPY", "CNY"]
 #   - deprecated: Will be removed in a future major release
 
 DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
+    # Enables the experimental operations workspace and PostgreSQL API
+    # @lifecycle: development
+    "OPERATIONS_ENABLED": False,
     # =================================================================
     # IN DEVELOPMENT
     # =================================================================

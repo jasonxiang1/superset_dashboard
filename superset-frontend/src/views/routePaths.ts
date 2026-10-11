@@ -47,6 +47,8 @@ export const RoutePaths = {
   DATASET: '/dataset/:datasetId',
   ROW_LEVEL_SECURITY: '/rowlevelsecurity/list',
   TASKS: '/tasks/list/',
+  OPERATIONS_BRIEF: '/operations/brief/',
+  OPERATIONS_PROJECTS: '/operations/projects/',
   SQLLAB: '/sqllab/',
   USER_INFO: '/user_info/',
   ACTION_LOG: '/actionlog/list',
