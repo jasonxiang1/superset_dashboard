@@ -1,0 +1,144 @@
+---
+title: Dashboard chat with OpenClaw
+---
+
+# Dashboard chat with OpenClaw
+
+**Ask Jason** opens a chat pane from a dashboard's header in view mode.
+The integration is intended for a trusted, single-user deployment using an
+existing OpenClaw agent. No local agent is required to render the pane.
+
+Each question includes the dashboard title and ID, chart definitions,
+available dataset metric and column definitions, native/cross-filter state,
+and legacy dashboard filters. Choose a chart to focus the question.
+Chart result rows and database connection objects are not included.
+The agent uses its existing tools when it needs actual data.
+
+Closing the pane preserves its conversation while the component remains mounted.
+Reloading, leaving the dashboard, or entering edit mode starts a fresh
+conversation. **New conversation** also starts a separate agent session.
+History is held in browser memory; OpenClaw's own retention settings still apply.
+Responses are displayed as plain text.
+The pane leaves dashboard controls available, including while a reply is pending.
+
+## Disconnected behavior
+
+With no gateway configuration, or when the gateway cannot be reached, sending
+a message displays:
+
+> Cannot connect to OpenClaw right now. Please check that the agent is running
+> and the connection is configured, then try again.
+
+The draft and previous replies remain available for an explicit retry.
+Chat requests are never automatically retried. A timeout does not guarantee
+that the agent stopped processing, so retrying may repeat work on the agent.
+Dashboard loading and querying do not depend on OpenClaw availability.
+
+## Superset configuration
+
+These settings can be supplied as environment variables or in
+`superset_config.py`. They are server-only and are not sent to the browser.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `OPENCLAW_GATEWAY_URL` | Empty | Internal gateway origin, without `/v1/chat/completions` |
+| `OPENCLAW_GATEWAY_TOKEN` | Empty | Gateway bearer token |
+| `OPENCLAW_AGENT_ID` | `main` | Existing agent ID to receive questions |
+
+For the deployment described in the project proposal, merge these settings
+into the existing Compose services:
+
+```yaml
+services:
+  openclaw-jason-dev:
+    environment:
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?Set OPENCLAW_GATEWAY_TOKEN}
+  superset:
+    environment:
+      OPENCLAW_GATEWAY_URL: http://openclaw-jason-dev:18789
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?Set OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_AGENT_ID: ${OPENCLAW_AGENT_ID:-main}
+    command:
+      - gunicorn
+      - --bind
+      - 0.0.0.0:8088
+      - --workers
+      - "2"
+      - --worker-class
+      - gthread
+      - --threads
+      - "4"
+      - --timeout
+      - "120"
+      - superset.app:create_app()
+```
+
+Keep the existing environment variables, volumes, dependencies, and port
+bindings. Set the token through the deployment's secret configuration and set
+the agent ID to the agent you already use. Both containers must share a Docker
+network. The gateway does not need a published host port.
+
+The backend uses a 5-second connection timeout and a 90-second read timeout;
+the browser waits up to 100 seconds. Set the reverse proxy's upstream timeout
+to at least 120 seconds. Threaded workers allow other requests to proceed
+while a chat request waits; this is not a background job queue.
+
+## OpenClaw configuration
+
+Check the version in the custom image against the
+[OpenClaw HTTP API documentation](https://docs.openclaw.ai/gateway/openai-http-api)
+and [gateway configuration](https://docs.openclaw.ai/gateway/config-gateway).
+
+Enable `gateway.http.endpoints.chatCompletions.enabled`, configure token
+authentication, and bind the gateway to an interface reachable from the Superset
+container. A gateway listening only on its container's loopback interface cannot
+receive requests from another container. Preserve the existing agent, model,
+and tool configuration.
+
+The integration sends `POST /v1/chat/completions`, targets
+`openclaw/<OPENCLAW_AGENT_ID>`, and supplies a stable `user` value per
+Superset user and conversation. It does not require a new OpenClaw channel.
+
+## Build and rollout
+
+1. Build this checkout using the existing custom Superset image build process.
+   Include both the Python changes and rebuilt frontend assets; deploying just
+   the Python files will not add the button.
+2. Update the Compose settings and the gateway configuration.
+3. Run the existing `superset-init` service with the rebuilt image, including
+   `superset init` to synchronize API permissions, then recreate Superset.
+4. Sign in with the Admin account and open any existing dashboard.
+
+The endpoint uses Superset's normal login, CSRF, and API permission checks
+(`can_read on OpenClaw`). Admin receives access through normal initialization.
+The fork's normal permission synchronization also grants this read permission to
+Alpha and Gamma. For a custom role, grant or omit `can_read on OpenClaw`
+explicitly; do not assume the integration is restricted to Admin.
+This integration does not impersonate the viewer when the agent queries data:
+it retains the existing agent's tool permissions and credentials. It does not
+enforce read-only tools or add multi-user data isolation.
+
+## Verification
+
+Run the focused tests in the configured development environment:
+
+```bash
+pytest tests/unit_tests/openclaw/api_test.py -q
+cd superset-frontend
+npm run test -- --maxWorkers=2 --watchman=false src/dashboard/components/OpenClawChat/OpenClawChat.test.tsx
+```
+
+Before using the VPS integration, verify:
+
+1. Without gateway configuration, a question shows the disconnected message and
+   retains its draft. Ordinary dashboard interactions still work.
+2. With the gateway configured, ask about a metric and check its explanation.
+3. Select a chart, change a filter, and ask a follow-up. Confirm the agent uses
+   the selected chart and updated context.
+4. Close and reopen the pane, then start a new conversation.
+5. While a reply is pending, refresh a chart to check worker responsiveness.
+
+Messages are limited to 8,000 characters, request bodies to 256 KiB, and agent
+responses to 1 MiB. Excessive context is rejected rather than silently truncated.
+Streaming, persistent browser history, and dashboard-editing controls are outside
+this version.

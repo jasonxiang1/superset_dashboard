@@ -84,6 +84,10 @@ const Dashboard = lazy(
   () => import(/* webpackChunkName: "Dashboard" */ 'src/pages/Dashboard'),
 );
 
+const Operations = lazy(
+  () => import(/* webpackChunkName: "Operations" */ 'src/pages/Operations'),
+);
+
 const DatabaseList = lazy(
   () => import(/* webpackChunkName: "DatabaseList" */ 'src/pages/DatabaseList'),
 );
@@ -260,6 +264,21 @@ export const routes: Routes = [
   { path: RoutePaths.USER_INFO, Component: UserInfo, mobileSupported: true },
   { path: RoutePaths.ACTION_LOG, Component: ActionLogList },
 ];
+
+if (isFeatureEnabled(FeatureFlag.Operations)) {
+  routes.push(
+    {
+      path: RoutePaths.OPERATIONS_BRIEF,
+      Component: Operations,
+      mobileSupported: true,
+    },
+    {
+      path: RoutePaths.OPERATIONS_PROJECTS,
+      Component: Operations,
+      mobileSupported: true,
+    },
+  );
+}
 
 if (isFeatureEnabled(FeatureFlag.TaggingSystem)) {
   routes.push({ path: RoutePaths.ALL_ENTITIES, Component: AllEntities });

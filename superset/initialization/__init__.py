@@ -200,6 +200,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         from superset.explore.permalink.api import ExplorePermalinkRestApi
         from superset.extensions.view import ExtensionsView
         from superset.importexport.api import ImportExportRestApi
+        from superset.openclaw.api import OpenClawRestApi
         from superset.queries.api import QueryRestApi
         from superset.queries.saved_queries.api import SavedQueryRestApi
         from superset.reports.api import ReportScheduleRestApi
@@ -271,6 +272,11 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(AnnotationLayerRestApi)
         appbuilder.add_api(AdvancedDataTypeRestApi)
         appbuilder.add_api(AvailableDomainsRestApi)
+        appbuilder.add_api(OpenClawRestApi)
+        if feature_flag_manager.is_feature_enabled("OPERATIONS_ENABLED"):
+            from superset.operations.api import OperationsRestApi
+
+            appbuilder.add_api(OperationsRestApi)
         appbuilder.add_api(CacheRestApi)
         appbuilder.add_api(ChartRestApi)
         appbuilder.add_api(ChartDataRestApi)
@@ -340,6 +346,17 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             href=f"{app_root}/welcome/",
             cond=lambda: bool(current_app.config["LOGO_TARGET_PATH"]),
         )
+
+        if feature_flag_manager.is_feature_enabled("OPERATIONS_ENABLED"):
+            from superset.operations.views import OperationsView
+
+            appbuilder.add_view(
+                OperationsView,
+                "Operations",
+                label=_("Operations"),
+                href=f"{app_root}/operations/brief/",
+                icon="fa-check-square-o",
+            )
 
         appbuilder.add_view(
             DatabaseView,

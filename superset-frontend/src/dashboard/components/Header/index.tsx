@@ -104,6 +104,7 @@ import { useHeaderActionsMenu } from './useHeaderActionsDropdownMenu';
 import { useHeaderAutoRefresh } from './useHeaderAutoRefresh';
 import AutoRefreshIndicator from '../AutoRefreshIndicator';
 import { RefreshButton } from '../RefreshButton';
+import OpenClawChat from '../OpenClawChat';
 
 type DashboardPropertiesUpdate = {
   slug?: string;
@@ -778,6 +779,13 @@ const Header = ({ onOpenMobileFilters }: HeaderComponentProps): JSX.Element => {
         ) : (
           <div css={actionButtonsStyle}>
             {NavExtension && <NavExtension />}
+            {!isEmbedded && (
+              <OpenClawChat
+                key={dashboardInfo.id}
+                dashboardId={dashboardInfo.id}
+                dashboardTitle={dashboardTitle}
+              />
+            )}
             {userCanEdit && !isEmbedded && !isMobile && (
               <Button
                 buttonStyle="secondary"
@@ -796,6 +804,8 @@ const Header = ({ onOpenMobileFilters }: HeaderComponentProps): JSX.Element => {
     ),
     [
       NavExtension,
+      dashboardInfo.id,
+      dashboardTitle,
       boundActionCreators.onRedo,
       boundActionCreators.onUndo,
       editMode,
