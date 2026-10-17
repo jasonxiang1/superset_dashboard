@@ -33,15 +33,15 @@ Existing dashboards, the dashboard builder, SQL Lab, charts, filters, and OpenCl
 chat retain their existing routes and behavior.
 
 Task assignees can be selected from active workers or entered as a free-form
-name. Selecting a name does not create a project worker assignment. Client
-receivable values remain in the financial source but are not displayed in the
-Operations interface.
+name. Selecting a name does not create a project worker assignment. Hours have
+no monetary fields or calculations. Legacy stored financial values remain untouched
+and are excluded from API responses, history and creation replays.
 
-Daily Brief includes multiple dated summary updates alongside task and labor
-metrics. Margin is not displayed. Use **View all updates for date** to select a
-day; all matching updates are loaded across API pages. **Add summary** saves a
-title, date and plain-text body to PostgreSQL. Existing create/edit/remove/restore
-capabilities also apply to summaries, including revision checks and audit history.
+Daily Brief includes dated summary updates. **All updates** is the default,
+with 20 records per page ordered by summary date descending, activity descending,
+then UUID. **By date** retains the date picker. Both views support removed records,
+editing, recovery and history. Saving retains the selected page and filters.
+**Add summary** saves a title, date and plain-text body to PostgreSQL.
 
 Provision the additive `operations_summaries` table before using summaries on an
 existing deployment. The table has the shared UUID/workspace/revision/lifecycle
@@ -72,8 +72,6 @@ FEATURE_FLAGS = {"OPERATIONS_ENABLED": True}
 OPERATIONS_DATABASE_UUID = "<UUID of an existing Superset database connection>"
 OPERATIONS_SCHEMA = "business_operations"
 OPERATIONS_TIMEZONE = "America/Los_Angeles"
-OPERATIONS_CURRENCY = "USD"
-OPERATIONS_FINANCIALS_ENABLED = False
 OPERATIONS_WORKSPACE_NAMES = {"<workspace UUID>": "Workshop"}
 OPERATIONS_WORKSPACE_ROLES = {
     "<workspace UUID>": ["Operations Editor", "Operations Reader"],
@@ -92,14 +90,15 @@ Configure explicit Operations capabilities on custom roles:
 | --- | --- |
 | `can_read` on Operations | Read records; required for all other actions |
 | `menu_access` on Operations | Show the Operations navigation entry |
-| `can_create` on Operations | Create projects and tasks |
+| `can_create` on Operations | Create workers, projects, tasks, summaries and attachment links |
 | `can_log_labor` on Operations | Create labor entries |
 | `can_add_note` on Operations | Create project notes |
 | `can_assign` on Operations | Assign existing workers to projects |
-| `can_edit` on Operations | Edit project, task, note or labor fields |
+| `can_edit` on Operations | Edit worker names and project, task, summary, attachment, note or labor fields |
 | `can_complete` on Operations | Complete or reopen tasks |
-| `can_remove` on Operations | Archive projects, tasks, notes, labor entries and assignments |
+| `can_remove` on Operations | Archive workers, projects, tasks, summaries, attachments, notes, labor entries and assignments |
 | `can_restore` on Operations | Restore archived records |
+| `can_chat` on Operations | Trusted-agent chat and proposal decisions; also requires `can_read` on OpenClaw |
 
 Assign the Operations role alongside the user's existing baseline role, such as
 Gamma, so shared application navigation and logging permissions remain available.
@@ -126,21 +125,18 @@ The adapter expects these tables in the configured schema:
 - `operations_tasks`: UUID, workspace UUID, parent project UUID, title,
   description, optional assignee display name, optional aware deadline,
   completion state/time, revision, creation/activity/archive timestamps.
-- `operations_workers`: read-only worker directory with UUID, workspace UUID,
+- `operations_workers`: editable worker directory with UUID, workspace UUID,
   display name, revision and lifecycle timestamps.
-- `operations_worker_rates`: read-only rate history with worker UUID, effective
-  date, hourly rate and currency. Rates apply until the next effective date.
 - `operations_assignments`: recoverable project/worker links; one active
   assignment per project/worker pair.
 - `operations_labor_entries`: worker, project, work date, minutes, note, preserved
-  hourly rate, currency and calculated cost, plus revision/lifecycle timestamps.
+  nullable legacy monetary columns, plus revision/lifecycle timestamps. Legacy columns
+  are retained for compatibility only; the application never updates their values.
 - `operations_notes`: project, plain-text body and revision/lifecycle timestamps.
-- `operations_attachments`: read-only project/filename/URL references and lifecycle
-  timestamps. Only HTTP(S) URLs are linked; no files are uploaded or fetched by
-  the backend.
-- `operations_project_financials`: optional read-only snapshots keyed by workspace
-  and project: revenue, non-labor cost, client receivable, labor paid and currency.
-  This table is read only when `OPERATIONS_FINANCIALS_ENABLED` is true.
+- `operations_attachments`: name and HTTP(S) URL, exactly one project or summary
+  parent in the same workspace, plus revision/lifecycle timestamps. No file bytes.
+- `operations_chat_proposals`: actor/workspace/conversation-bound actions, expiry,
+  cancellation and transactional application result for idempotent approval.
 - `operations_audit`: UUID, workspace, resource, record UUID, actor identifier,
   action, timestamp, before/after snapshots.
 - `operations_requests`: workspace and request UUID, actor, payload fingerprint,
@@ -172,14 +168,14 @@ with connection.get_sqla_engine() as engine:
 Provisioning is separate from application startup. This creates empty tables,
 not fixture records. Task assignee names are display labels, not authenticated identities or permission
 boundaries. Labor entries and assignments reference the explicit worker directory.
-The directory, rate history, attachment URLs and financial snapshots must be
-populated by the business-data integration; the application does not invent them.
+The worker directory is collapsed by default. Expand it to add, edit, remove, or restore workers. It can be populated through Projects → Worker directory or by the business-data integration. Legacy
+rate and financial tables may remain in PostgreSQL but are not accessed by Operations.
 
 ## API contract
 
 All routes begin with `/api/v1/operations/workspaces/{workspace_uuid}`.
 Read resources are `projects`, `tasks`, `notes`, `labor_entries`, `assignments`,
-`workers`, and `attachments`. Workers and attachments are read-only. Assignments
+`workers`, `summaries`, and `attachments`. Workers support create, rename, remove, restore, and history using the existing Operations permissions. Removal preserves assignments and hours and excludes the worker from new assignment choices. Assignments
 are created or removed/restored; changing a worker means removing the old
 assignment and adding another.
 
@@ -208,12 +204,16 @@ Status is one of `planned`, `in_progress`, `on_hold`, `completed`, or `cancelled
 Notes accept a required nonblank `body`. Assignments accept `project_id` and
 `worker_id`. Labor entries accept `project_id`, `worker_id`, `work_date`, `minutes`
 (1–1440), and an optional `note`. These creates also require `request_id`.
-Costs and rates are server-owned fields. The worker must be actively assigned
-when creating an entry or moving it to another worker. Editing an existing
-entry's duration retains its rate snapshot even after unassignment. Changing the
-worker or work date resolves the historical rate again. Costs round half-up to
-two decimal places. Removing a labor entry voids it; restoring retains its
-snapshot. Notes render as text rather than HTML.
+The worker must be actively assigned when creating hours or moving an entry to
+another worker. Historical hours can be corrected after unassignment. Rates and
+costs are neither required nor calculated. Notes render as plain text.
+
+Attachments accept `request_id`, `name`, `url`, and exactly one of `project_id` or
+`summary_id`. Patches accept `revision`, `name` and/or `url`; parents are immutable.
+Their list accepts `summary_id` or `project_id`. Archive/restore never deletes the
+external file. Image previews use HTTPS links; PDF and supported Google Drive/Docs
+links use restricted frames. Other links offer **Open original**. A frame cannot
+reliably expose cross-origin permission failures; the UI always offers a fallback.
 
 Task creation accepts `request_id`, `project_id`, `title`, `description`,
 `assignee_name`, and `due_at`. Deadlines require an explicit timezone.
@@ -248,19 +248,65 @@ connections/tables return 503. SQL error details are not sent to clients.
   `OPERATIONS_TIMEZONE`, belonging to unarchived projects. Completed tasks remain
   in the count and contribute to completion progress. The brief returns the first
   100 tasks; Projects provides complete task lists.
+- **Total labor hours** sums logged minutes across all dates in the workspace,
+  divided by 60. Removed entries and removed projects are excluded. No rates or
+  financial values are included.
 - **Open jobs** counts unarchived projects excluding completed/cancelled statuses.
-- **Labor due** sums each project's unvoided accrued labor cost less its recorded
-  labor payments, with each payable floored at zero.
-- **Margin** is gross margin over all recorded work: `(revenue - non-labor costs
-  - unvoided labor costs) / revenue`. It is unavailable for nonpositive revenue.
+## Upgrade existing deployments
 
-Financial metrics include archived projects so archiving cannot erase costs or
-balances. Enable the financial source only after complete snapshots are available
-for every project in the workspace and all amounts use `OPERATIONS_CURRENCY`.
-Incomplete snapshots produce unavailable summary totals; mismatched currencies
-fail explicitly. Without a configured financial source, labor due, margin and
-client receivables display **Unavailable**, while logged labor retains its known
-rate and cost. These are operational gross metrics, not a general ledger.
+Back up the external PostgreSQL database and rehearse against a disposable restore
+first. Stop Operations writes during the production upgrade. Use the rebuilt image:
+
+```bash
+# Supply the disposable restore URI for rehearsal; do not place passwords in history.
+export OPERATIONS_MIGRATION_DATABASE_URI
+python -m superset.operations.migrate --schema business_operations
+superset init
+```
+
+The explicit migration makes legacy labor monetary columns nullable, adds summary
+attachment ownership constraints/indexes, and creates the proposal table. It is
+transactional and repeatable. It does not change or delete existing financial values.
+It assumes the earlier summaries table is provisioned. It never runs on startup.
+Keep your backup: rolling back to an older image may require restoring data because
+that image expects monetary values on every labor entry.
+
+Deploy rebuilt Python and frontend assets together. Run `superset init` with the
+Operations feature enabled, then verify explicit role grants. No Superset metadata
+schema migration is added by this feature.
+
+## Ask Jason in Operations
+
+Reuse the server-only gateway settings documented in [OpenClaw chat](./openclaw-chat).
+No local OpenClaw installation is needed. Grant `can_chat` on Operations only to
+trusted users, alongside Operations read/workspace/database access and `can_read`
+on OpenClaw. The existing agent retains its own credentials and tools; this does
+not impersonate the viewer or isolate those tools by Superset workspace.
+
+Each question carries fresh visible record references and summary filters. Superset
+re-reads full saved records and the daily brief. Unsaved form drafts are not included.
+The agent can request up to three additional batches of five scoped reads, each
+list bounded to 20 rows. Questions that exceed context limits fail explicitly.
+The gateway must return the structured JSON contract described by the Operations
+system prompt; incompatible replies fail without executing any action.
+
+Accessible linked documents may be read through the existing agent's tools/public
+access. Browser login cookies are not forwarded and no Google OAuth is introduced.
+An inaccessible document must be reported as unavailable, not inferred.
+
+Changes are proposed as plain text bullets with Apply/Cancel controls. Proposals
+expire after 15 minutes, bind to actor/workspace/conversation and record revisions,
+and recheck capabilities on application. All approved changes and audit records
+commit in one transaction. Duplicate Apply requests return the original result.
+No model-generated SQL is executed. The agent's independent shell/database tools
+remain outside this approval boundary; instructions to propose instead of writing
+are not a technical restriction on those tools. Preserve existing automation only
+with that trusted-agent limitation understood.
+
+Closing/reopening preserves in-memory history. Navigation, reload or New conversation
+starts a separate session. Navigation cancels browser requests, not necessarily
+upstream agent execution. Failures retain drafts; retries are explicit. After an
+ambiguous Apply response, retry the same proposal to recover its result.
 
 ## Tests and fixture cleanup
 

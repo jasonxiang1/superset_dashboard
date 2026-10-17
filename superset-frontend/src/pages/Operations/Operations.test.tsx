@@ -33,6 +33,7 @@ import {
   getSettings,
   getBrief,
   listAll,
+  listRecords,
   changeRecord,
   saveRecord,
   getRecord,
@@ -44,6 +45,7 @@ jest.mock('./api', () => ({
   getSettings: jest.fn(),
   getBrief: jest.fn(),
   listAll: jest.fn(),
+  listRecords: jest.fn(),
   changeRecord: jest.fn(),
   saveRecord: jest.fn(),
   getRecord: jest.fn(),
@@ -87,25 +89,21 @@ const settings: Settings = {
     restore: true,
   },
   timezone: 'UTC',
-  currency: 'USD',
 };
 const brief: Brief = {
   day: '2026-10-10',
   timezone: 'UTC',
-  currency: 'USD',
   items_today: 1,
   completed_today: 0,
   open_jobs: 1,
+  total_labor_hours: 2.5,
   tasks: [task],
   tasks_has_more: false,
-  labor_due: null,
-  margin_percent: null,
-  financial_period: 'all_recorded_work',
-  project_financials: {},
 };
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(listRecords).mockResolvedValue([]);
   window.featureFlags = { OPERATIONS_ENABLED: true };
   jest.mocked(getSettings).mockResolvedValue(settings);
   jest.mocked(getBrief).mockResolvedValue(brief);
@@ -139,7 +137,9 @@ function renderPage(path = '/operations/brief/') {
 test('daily brief uses real metrics and persists completion before refreshing', async () => {
   renderPage();
   const checkbox = await screen.findByRole('checkbox', { name: 'Call client' });
-  expect(screen.getAllByText('Unavailable')).toHaveLength(1);
+  expect(screen.getByText('Total labor hours')).toBeVisible();
+  expect(screen.getByText('2.5')).toBeVisible();
+  expect(screen.queryByText('Labor due')).not.toBeInTheDocument();
   expect(screen.queryByText('Margin')).not.toBeInTheDocument();
   await userEvent.click(checkbox);
   await waitFor(() =>
@@ -295,9 +295,12 @@ test.each(['worker', 'custom'])(
 
 test('summary date selection shows all manual and PostgreSQL updates for a day', async () => {
   jest
-    .mocked(listAll)
+    .mocked(listRecords)
     .mockImplementation(async (_workspace, resource, options) => {
-      if (resource !== 'summaries' || options?.summaryDate !== '2026-10-10')
+      if (
+        resource !== 'summaries' ||
+        (options?.summaryDate && options.summaryDate !== '2026-10-10')
+      )
         return [];
       return [
         {
@@ -328,8 +331,9 @@ test('summary date selection shows all manual and PostgreSQL updates for a day',
   );
   expect(await screen.findByText('Morning update')).toBeVisible();
   expect(screen.getByText('Afternoon update')).toBeVisible();
-  expect(screen.getByText('Manual entry')).toBeVisible();
-  expect(screen.getByText('PostgreSQL integration')).toBeVisible();
+  expect(screen.getByText(/Manual entry/)).toBeVisible();
+  expect(screen.getByText(/PostgreSQL integration/)).toBeVisible();
+  await userEvent.click(screen.getByText('By date'));
   fireEvent.change(screen.getByLabelText('View all updates for date'), {
     target: { value: '2026-10-11' },
   });
@@ -496,4 +500,29 @@ test('late responses from another workspace cannot replace the selected data', a
   expect(
     screen.queryByRole('checkbox', { name: 'Call client' }),
   ).not.toBeInTheDocument();
+});
+
+test('Projects offers worker creation without project or financial fields', async () => {
+  renderPage('/operations/projects/');
+  const directory = await screen.findByRole('button', {
+    name: /Worker directory/,
+  });
+  expect(directory).toHaveAttribute('aria-expanded', 'false');
+  await userEvent.click(directory);
+  expect(directory).toHaveAttribute('aria-expanded', 'true');
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add worker' }),
+  );
+  const modal = screen.getByRole('dialog');
+  expect(within(modal).queryByLabelText('Project')).not.toBeInTheDocument();
+  await userEvent.type(within(modal).getByLabelText('Name'), 'Alex Smith');
+  await userEvent.click(within(modal).getByRole('button', { name: 'Save' }));
+  await waitFor(() =>
+    expect(saveRecord).toHaveBeenCalledWith(
+      'workspace-1',
+      'workers',
+      { name: 'Alex Smith', request_id: expect.any(String) },
+      undefined,
+    ),
+  );
 });

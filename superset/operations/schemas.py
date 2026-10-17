@@ -151,7 +151,7 @@ class AssignmentCreateSchema(ProjectChildCreateSchema):
 
 
 class LaborCreateSchema(AssignmentCreateSchema):
-    """Log minutes; cost and historical rate are resolved server-side."""
+    """Log minutes without monetary fields."""
 
     work_date = fields.Date(required=True)
     minutes = fields.Integer(
@@ -167,3 +167,41 @@ class LaborUpdateSchema(UpdateSchema):
     work_date = fields.Date()
     minutes = fields.Integer(strict=True, validate=validate.Range(min=1, max=1440))
     note = fields.String(validate=validate.Length(max=8000))
+
+
+class AttachmentCreateSchema(Schema):
+    """Store an external link belonging to exactly one project or summary."""
+
+    request_id = fields.UUID(required=True)
+    project_id = fields.UUID(allow_none=True, load_default=None)
+    summary_id = fields.UUID(allow_none=True, load_default=None)
+    name = fields.String(required=True, validate=[validate.Length(max=200), nonblank])
+    url = fields.Url(
+        required=True, schemes={"http", "https"}, validate=validate.Length(max=4096)
+    )
+
+    @validates_schema
+    def require_parent(self, data: dict[str, object], **kwargs: object) -> None:
+        """Reject missing or ambiguous ownership."""
+        if bool(data.get("project_id")) == bool(data.get("summary_id")):
+            raise ValidationError("Provide exactly one project or summary parent.")
+
+
+class AttachmentUpdateSchema(UpdateSchema):
+    """Edit link metadata without moving it between parents."""
+
+    name = fields.String(validate=[validate.Length(max=200), nonblank])
+    url = fields.Url(schemes={"http", "https"}, validate=validate.Length(max=4096))
+
+
+class WorkerCreateSchema(Schema):
+    """Create a workspace worker without financial attributes."""
+
+    request_id = fields.UUID(required=True)
+    name = fields.String(required=True, validate=[validate.Length(max=200), nonblank])
+
+
+class WorkerUpdateSchema(UpdateSchema):
+    """Rename a worker while preserving assignment and labor references."""
+
+    name = fields.String(validate=[validate.Length(max=200), nonblank])

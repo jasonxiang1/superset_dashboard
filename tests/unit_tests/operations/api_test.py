@@ -414,14 +414,14 @@ def test_directory_sources_and_history_are_protected(
     editor: FlaskClient,
     workspace: UUID,
 ) -> None:
-    """Directory and attachment sources remain read-only for operations editors."""
-    assert editor.post(f"{base_url(workspace)}/workers", json={}).status_code == 405
-    assert editor.post(f"{base_url(workspace)}/attachments", json={}).status_code == 405
+    """Worker and attachment writes validate required fields."""
+    assert editor.post(f"{base_url(workspace)}/workers", json={}).status_code == 400
+    assert editor.post(f"{base_url(workspace)}/attachments", json={}).status_code == 400
     assert (
         editor.post(
             f"{base_url(workspace)}/workers/{uuid4()}/archive", json={"revision": 1}
         ).status_code
-        == 405
+        == 404
     )
     assert (
         editor.get(f"{base_url(workspace)}/tasks?project_id=invalid").status_code == 400
@@ -438,3 +438,151 @@ def test_page_entry_points_and_settings_require_authentication(app: Flask) -> No
         assert client.get("/api/v1/operations/settings").status_code in {401, 403}
         assert client.get("/operations/brief/").status_code in {302, 401, 403}
         assert client.get("/operations/projects/").status_code in {302, 401, 403}
+
+
+def test_chat_requires_explicit_permission(
+    editor: FlaskClient, workspace: UUID
+) -> None:
+    """Read/edit capabilities alone do not grant access to the trusted agent."""
+    response = editor.post(
+        f"{base_url(workspace)}/chat",
+        json={
+            "conversation_id": str(uuid4()),
+            "message": "Explain",
+            "context": {},
+        },
+    )
+    assert response.status_code == 403
+
+
+def test_chat_proposal_http_approval(
+    app: Flask, business_database: MagicMock, workspace: UUID, mocker: MockerFixture
+) -> None:
+    """A mocked gateway stages a change; the authenticated real route applies it."""
+    client = authenticated_client(
+        app, "operations_editor", ["can_read", "can_chat", "can_create"]
+    )
+    with client.session_transaction() as session:
+        user = security_manager.get_user_by_id(session["_user_id"])
+    pvm = security_manager.add_permission_view_menu("can_read", "OpenClaw")
+    security_manager.add_permission_role(user.roles[0], pvm)
+    upstream = MagicMock()
+    upstream.__enter__.return_value = upstream
+    upstream.status_code = 200
+    from superset.utils import json
+
+    upstream.iter_content.return_value = [
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "reply": "Proposed project",
+                                    "actions": [
+                                        {
+                                            "resource": "projects",
+                                            "action": "create",
+                                            "payload": {
+                                                "request_id": str(uuid4()),
+                                                "title": "Agent proposed",
+                                            },
+                                        }
+                                    ],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        ).encode()
+    ]
+    post = mocker.patch("superset.operations.chat.requests.post", return_value=upstream)
+    app.config.update(
+        OPENCLAW_GATEWAY_URL="http://mock-gateway",
+        OPENCLAW_GATEWAY_TOKEN="test-gateway-secret",  # noqa: S106
+    )
+    conversation = str(uuid4())
+    response = client.post(
+        f"{base_url(workspace)}/chat",
+        json={
+            "conversation_id": conversation,
+            "message": "Create a project",
+            "context": {"records": []},
+        },
+    )
+    assert response.status_code == 200
+    assert "test-gateway-secret" not in response.text
+    assert client.get(f"{base_url(workspace)}/projects").json["result"] == []
+    proposal = response.json["result"]["proposal"]["id"]
+    endpoint = f"{base_url(workspace)}/chat/proposals/{proposal}"
+    applied = client.post(
+        endpoint, json={"conversation_id": conversation, "decision": "apply"}
+    )
+    assert applied.status_code == 200
+    assert applied.json["result"]["applied"]
+    assert (
+        client.post(
+            endpoint, json={"conversation_id": conversation, "decision": "apply"}
+        ).json
+        == applied.json
+    )
+    assert len(client.get(f"{base_url(workspace)}/projects").json["result"]) == 1
+    assert post.call_count == 1
+
+
+def test_worker_lifecycle(editor: FlaskClient, workspace: UUID) -> None:
+    """Workers use idempotent creates, revision checks, scoped writes, and history."""
+    url = f"{base_url(workspace)}/workers"
+    payload = {"request_id": str(uuid4()), "name": "Alex"}
+    created = editor.post(url, json=payload)
+    assert created.status_code == 201
+    worker = created.json["result"]
+    assert editor.post(url, json=payload).json["result"]["id"] == worker["id"]
+    record_url = f"{url}/{worker['id']}"
+    assert (
+        editor.patch(record_url, json={"revision": 1, "name": "Alex Smith"}).status_code
+        == 200
+    )
+    assert (
+        editor.patch(record_url, json={"revision": 1, "name": "Stale"}).status_code
+        == 409
+    )
+    assert (
+        editor.patch(record_url, json={"revision": 2, "name": " "}).status_code == 400
+    )
+    assert editor.post(f"{record_url}/archive", json={"revision": 2}).status_code == 200
+    assert editor.get(url).json["result"] == []
+    assert editor.post(f"{record_url}/restore", json={"revision": 3}).status_code == 200
+    assert editor.get(url).json["result"][0]["name"] == "Alex Smith"
+    assert len(editor.get(f"{record_url}/history").json["result"]) == 4
+    assert (
+        editor.patch(
+            f"{base_url(uuid4())}/workers/{worker['id']}",
+            json={"revision": 4, "name": "Other"},
+        ).status_code
+        == 403
+    )
+
+
+def test_worker_mutations_require_capabilities(
+    app: Flask, business_database: MagicMock, workspace: UUID
+) -> None:
+    """A read-only Operations role cannot create, rename, remove, or restore workers."""
+    reader = authenticated_client(app, "operations_reader", ["can_read"])
+    url = f"{base_url(workspace)}/workers"
+    assert (
+        reader.post(url, json={"request_id": str(uuid4()), "name": "Alex"}).status_code
+        == 403
+    )
+    record_url = f"{url}/{uuid4()}"
+    assert (
+        reader.patch(record_url, json={"revision": 1, "name": "Alex"}).status_code
+        == 403
+    )
+    for action in ("archive", "restore"):
+        assert (
+            reader.post(f"{record_url}/{action}", json={"revision": 1}).status_code
+            == 403
+        )

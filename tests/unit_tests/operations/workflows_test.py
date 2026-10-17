@@ -14,10 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""PostgreSQL checks for labor economics, notes, assignments and summary scope."""
+"""PostgreSQL checks for hours, notes, assignments and summary scope."""
 
 from datetime import date, datetime, timezone
-from decimal import Decimal
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -36,7 +35,7 @@ from tests.unit_tests.operations.repository_test import project_payload
 
 
 def seed_worker(repo: OperationsRepository, name: str = "Alex") -> UUID:
-    """Populate a read-only directory source exclusively in the test schema."""
+    """Populate a worker exclusively in the test schema."""
     worker = uuid4()
     now = datetime.now(timezone.utc)
     repo.connection.execute(
@@ -50,20 +49,6 @@ def seed_worker(repo: OperationsRepository, name: str = "Alex") -> UUID:
             archived_at=None,
         )
     )
-    for effective, rate in [
-        (date(2026, 1, 1), Decimal("20.25")),
-        (date(2026, 10, 11), Decimal("30")),
-    ]:
-        repo.connection.execute(
-            repo.tables.rates.insert().values(
-                id=uuid4(),
-                workspace_id=repo.workspace_id,
-                worker_id=worker,
-                effective_from=effective,
-                hourly_rate=rate,
-                currency="USD",
-            )
-        )
     return worker
 
 
@@ -98,61 +83,41 @@ def labor_payload(project: Record, worker: UUID, day: str = "2026-10-10") -> Rec
     )
 
 
-def test_historical_rate_snapshot_corrections_void_and_restore(
-    operations_engine: Engine,
-    operations_tables: OperationsTables,
+def test_hours_without_rates_preserve_legacy_money(
+    operations_engine: Engine, operations_tables: OperationsTables
 ) -> None:
-    """Changes to the rate source cannot silently rewrite an existing labor cost."""
-    workspace = uuid4()
+    """Hours never require rates or expose old financial snapshots."""
+    from sqlalchemy import select
+
     with operations_engine.begin() as connection:
-        repo = OperationsRepository(connection, operations_tables, workspace, "17")
+        repo = OperationsRepository(connection, operations_tables, uuid4(), "17")
         project = repo.create("projects", project_payload())
         worker = seed_worker(repo)
         with pytest.raises(OperationsError, match="Assign the worker"):
             repo.create("labor_entries", labor_payload(project, worker))
         repo.create("assignments", assignment_payload(project, worker))
-        entry = repo.create("labor_entries", labor_payload(project, worker))
+        payload = labor_payload(project, worker)
+        entry = repo.create("labor_entries", payload)
         entry_id = UUID(str(entry["id"]))
-        assert Decimal(str(entry["cost"])) == Decimal("30.38")
-        assert Decimal(str(entry["hourly_rate"])) == Decimal("20.25")
+        assert not {"cost", "hourly_rate", "currency"}.intersection(entry)
+        table = operations_tables.labor_entries
         connection.execute(
-            operations_tables.rates.update()
-            .where(
-                operations_tables.rates.c.worker_id == worker,
-                operations_tables.rates.c.effective_from == date(2026, 1, 1),
-            )
-            .values(hourly_rate=99)
+            table.update()
+            .where(table.c.id == entry_id)
+            .values(cost=123, hourly_rate=82, currency="USD")
         )
-        entry = repo.change(
-            "labor_entries",
-            entry_id,
-            {
-                "revision": 1,
-                "minutes": 60,
-                "worker_id": worker,
-                "work_date": date(2026, 10, 10),
-            },
-            "edit",
+        revised = repo.change(
+            "labor_entries", entry_id, {"revision": 1, "minutes": 60}, "edit"
         )
-        assert Decimal(str(entry["cost"])) == Decimal("20.25")
-        entry = repo.change(
-            "labor_entries",
-            entry_id,
-            {"revision": 2, "work_date": date(2026, 10, 11)},
-            "edit",
-        )
-        assert Decimal(str(entry["cost"])) == Decimal("30.00")
-        entry = repo.change("labor_entries", entry_id, {"revision": 3}, "archive")
+        assert "cost" not in revised
         assert (
-            repo.list_records("labor_entries", archived=False, limit=100, offset=0)
-            == []
+            connection.scalar(select(table.c.cost).where(table.c.id == entry_id)) == 123
         )
-        entry = repo.change("labor_entries", entry_id, {"revision": 4}, "restore")
-        assert Decimal(str(entry["cost"])) == Decimal("30.00")
-    with operations_engine.connect() as connection:
-        repo = OperationsRepository(connection, operations_tables, workspace, "18")
-        assert Decimal(str(repo.get("labor_entries", entry_id)["cost"])) == Decimal(
-            "30.00"
+        assert "cost" not in repo.get("labor_entries", entry_id)
+        assert "cost" not in repo.create("labor_entries", payload)
+        assert all(
+            "cost" not in cast(Record, item["after"])
+            for item in repo.history("labor_entries", entry_id)
         )
 
 
@@ -199,11 +164,11 @@ def test_notes_edit_archive_recover_and_project_filter(
         assert len(repo.history("notes", note_id)) == 4
 
 
-def test_missing_or_cross_workspace_worker_and_rate_are_rejected(
+def test_missing_or_cross_workspace_worker_are_rejected(
     operations_engine: Engine,
     operations_tables: OperationsTables,
 ) -> None:
-    """A directory identity must be authorized, assigned and have a dated rate."""
+    """A directory identity must be authorized, and assigned."""
     with operations_engine.begin() as connection:
         first = OperationsRepository(connection, operations_tables, uuid4(), "17")
         other_worker = seed_worker(first)
@@ -213,17 +178,14 @@ def test_missing_or_cross_workspace_worker_and_rate_are_rejected(
             repo.create("assignments", assignment_payload(project, other_worker))
         worker = seed_worker(repo)
         repo.create("assignments", assignment_payload(project, worker))
-        with pytest.raises(OperationsError, match="No labor rate"):
-            repo.create("labor_entries", labor_payload(project, worker, "2025-12-31"))
-        connection.execute(
-            operations_tables.rates.update()
-            .where(
-                operations_tables.rates.c.worker_id == worker,
-            )
-            .values(currency="EUR")
+        entry = repo.create(
+            "labor_entries", labor_payload(project, worker, "2025-12-31")
         )
-        with pytest.raises(OperationsError, match="currency"):
-            repo.create("labor_entries", labor_payload(project, worker))
+        assert entry["minutes"] == 90
+        assert repo.summary()["total_labor_hours"] == 1.5
+        assert first.summary()["total_labor_hours"] == 0
+        repo.change("labor_entries", UUID(str(entry["id"])), {"revision": 1}, "archive")
+        assert repo.summary()["total_labor_hours"] == 0
 
 
 def test_summary_timezone_dst_and_archived_project_scope(
@@ -271,8 +233,8 @@ def test_summary_timezone_dst_and_archived_project_scope(
         assert summary["items_today"] == 2
         assert summary["completed_today"] == 1
         assert summary["open_jobs"] == 1
-        assert summary["labor_due"] is None
-        assert summary["margin_percent"] is None
+        assert "labor_due" not in summary
+        assert "margin_percent" not in summary
         project_id = UUID(str(project["id"]))
         revision = repo.get("projects", project_id)["revision"]
         repo.change("projects", project_id, {"revision": revision}, "archive")
@@ -280,55 +242,7 @@ def test_summary_timezone_dst_and_archived_project_scope(
         assert repo.summary()["open_jobs"] == 0
 
 
-def test_financials_recalculate_voided_labor_and_preserve_archived_costs(
-    operations_engine: Engine,
-    operations_tables: OperationsTables,
-) -> None:
-    """Incomplete sources are unavailable; complete sources drive due and margin."""
-    with operations_engine.begin() as connection:
-        repo = OperationsRepository(
-            connection, operations_tables, uuid4(), "17", financials_enabled=True
-        )
-        project = repo.create("projects", project_payload())
-        worker = seed_worker(repo)
-        repo.create("assignments", assignment_payload(project, worker))
-        entry = repo.create("labor_entries", labor_payload(project, worker))
-        connection.execute(
-            operations_tables.financials.insert().values(
-                workspace_id=repo.workspace_id,
-                project_id=UUID(str(project["id"])),
-                revenue=1000,
-                non_labor_cost=100,
-                client_receivable=500,
-                labor_paid=5,
-                currency="USD",
-            )
-        )
-        summary = repo.summary()
-        assert Decimal(str(summary["labor_due"])) == Decimal("25.38")
-        assert Decimal(str(summary["margin_percent"])) == Decimal("86.96")
-        project_id = UUID(str(project["id"]))
-        repo.change(
-            "projects",
-            project_id,
-            {"revision": repo.get("projects", project_id)["revision"]},
-            "archive",
-        )
-        assert repo.summary()["labor_due"] == summary["labor_due"]
-        repo.change(
-            "projects",
-            project_id,
-            {"revision": repo.get("projects", project_id)["revision"]},
-            "restore",
-        )
-        repo.change("labor_entries", UUID(str(entry["id"])), {"revision": 1}, "archive")
-        assert Decimal(str(repo.summary()["labor_due"])) == Decimal("0")
-        assert Decimal(str(repo.summary()["margin_percent"])) == Decimal("90")
-        repo.create("projects", project_payload("Missing financial snapshot"))
-        assert repo.summary()["margin_percent"] is None
-
-
-def test_duration_correction_after_unassignment_retains_rate(
+def test_duration_correction_after_unassignment_works(
     operations_engine: Engine,
     operations_tables: OperationsTables,
 ) -> None:
@@ -348,5 +262,27 @@ def test_duration_correction_after_unassignment_retains_rate(
             {"revision": 1, "minutes": 60},
             "edit",
         )
-        assert Decimal(str(revised["cost"])) == Decimal("20.25")
-        assert revised["hourly_rate"] == entry["hourly_rate"]
+        assert revised["minutes"] == 60
+        assert "hourly_rate" not in revised
+
+
+def test_worker_removal_preserves_hours_and_assignments(
+    operations_engine: Engine,
+    operations_tables: OperationsTables,
+) -> None:
+    """Removing a worker preserves history but prevents new assignments."""
+    with operations_engine.begin() as connection:
+        repo = OperationsRepository(connection, operations_tables, uuid4(), "17")
+        project = repo.create("projects", project_payload())
+        worker_record = repo.create("workers", {"request_id": uuid4(), "name": "Alex"})
+        worker = UUID(str(worker_record["id"]))
+        assignment = repo.create("assignments", assignment_payload(project, worker))
+        entry = repo.create(
+            "labor_entries", labor_payload(project, worker, "2026-10-16")
+        )
+        repo.change("workers", worker, {"revision": 1}, "archive")
+        assert repo.get("assignments", UUID(str(assignment["id"]))) == assignment
+        assert repo.get("labor_entries", UUID(str(entry["id"]))) == entry
+        assert repo.summary()["total_labor_hours"] == 1.5
+        with pytest.raises(OperationsError, match="Worker is inactive"):
+            repo.create("assignments", assignment_payload(project, worker))

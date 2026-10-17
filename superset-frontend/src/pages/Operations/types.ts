@@ -68,12 +68,10 @@ export interface LaborEntry extends BaseRecord {
   work_date: string;
   minutes: number;
   note: string;
-  hourly_rate: string;
-  cost: string;
-  currency: string;
 }
 export interface Attachment extends BaseRecord {
-  project_id: string;
+  project_id: string | null;
+  summary_id: string | null;
   name: string;
   url: string;
 }
@@ -88,9 +86,9 @@ export interface RecordMap {
   summaries: SummaryUpdate;
 }
 export type Resource = keyof RecordMap;
-export type WritableResource = Exclude<Resource, 'workers' | 'attachments'>;
+export type WritableResource = Resource;
 export type WritableRecord = RecordMap[WritableResource];
-export type Capabilities = Record<
+export type Capabilities = { chat?: boolean } & Record<
   | 'create'
   | 'edit'
   | 'remove'
@@ -105,27 +103,16 @@ export interface Settings {
   workspaces: { id: string; name: string }[];
   capabilities: Capabilities;
   timezone: string;
-  currency: string;
-}
-export interface Financials {
-  client_receivable: string;
-  labor_due: string;
-  labor_cost: string;
-  currency: string;
 }
 export interface Brief {
   day: string;
   timezone: string;
-  currency: string;
   items_today: number;
   completed_today: number;
   open_jobs: number;
+  total_labor_hours: number;
   tasks: Task[];
   tasks_has_more: boolean;
-  labor_due: string | null;
-  margin_percent: string | null;
-  financial_period: string;
-  project_financials: Record<string, Financials>;
 }
 export interface HistoryEntry {
   id: string;
@@ -139,4 +126,5 @@ export interface DialogState {
   resource: WritableResource;
   record?: WritableRecord;
   projectId?: string;
+  summaryId?: string;
 }

@@ -17,7 +17,7 @@
 """Transactional, workspace-scoped persistence for operational projects and tasks."""
 
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from hashlib import sha256
 from typing import cast, Literal
 from uuid import UUID, uuid4
@@ -39,6 +39,20 @@ Resource = Literal[
     "summaries",
 ]
 Record = dict[str, object]
+FINANCIAL_FIELDS = {
+    "hourly_rate",
+    "cost",
+    "currency",
+    "revenue",
+    "non_labor_cost",
+    "client_receivable",
+    "labor_paid",
+    "labor_cost",
+    "labor_due",
+    "margin_percent",
+    "financial_period",
+    "project_financials",
+}
 TOP_LEVEL_RESOURCES = {"projects", "workers", "summaries"}
 
 
@@ -57,8 +71,11 @@ def serialize(record: Record) -> Record:
         if isinstance(value, datetime)
         else str(value)
         if isinstance(value, (UUID, Decimal, date))
+        else serialize(value)
+        if isinstance(value, dict)
         else value
         for key, value in record.items()
+        if key not in FINANCIAL_FIELDS
     }
 
 
@@ -73,8 +90,6 @@ class OperationsRepository:
         actor_id: str,
         *,
         business_timezone: str = "UTC",
-        currency: str = "USD",
-        financials_enabled: bool = False,
     ) -> None:
         if connection.dialect.name != "postgresql":
             raise OperationsError(503, "Operations requires a PostgreSQL connection.")
@@ -83,8 +98,6 @@ class OperationsRepository:
         self.workspace_id = workspace_id
         self.actor_id = actor_id
         self.business_timezone = business_timezone
-        self.currency = currency
-        self.financials_enabled = financials_enabled
 
     def _table(self, resource: Resource) -> Table:
         return {
@@ -125,10 +138,18 @@ class OperationsRepository:
         offset: int,
         project_id: UUID | None = None,
         summary_date: date | None = None,
+        summary_id: UUID | None = None,
     ) -> list[Record]:
         """List bounded current-state records without exposing audit history."""
         table = self._table(resource)
         statement = select(table).where(table.c.workspace_id == self.workspace_id)
+        if summary_id is not None:
+            if resource != "attachments":
+                raise OperationsError(
+                    400, "Summary filtering applies only to attachments."
+                )
+            self._load("summaries", summary_id)
+            statement = statement.where(table.c.summary_id == summary_id)
         if summary_date is not None:
             if resource != "summaries":
                 raise OperationsError(400, "Date filtering applies only to summaries.")
@@ -140,7 +161,25 @@ class OperationsRepository:
             statement = statement.where(table.c.project_id == project_id)
         if not archived:
             statement = statement.where(table.c.archived_at.is_(None))
-            if resource not in TOP_LEVEL_RESOURCES:
+            if resource == "attachments":
+                project, summary = self.tables.projects, self.tables.summaries
+                statement = statement.where(
+                    select(project.c.id)
+                    .where(
+                        project.c.id == table.c.project_id,
+                        project.c.workspace_id == self.workspace_id,
+                        project.c.archived_at.is_(None),
+                    )
+                    .exists()
+                    | select(summary.c.id)
+                    .where(
+                        summary.c.id == table.c.summary_id,
+                        summary.c.workspace_id == self.workspace_id,
+                        summary.c.archived_at.is_(None),
+                    )
+                    .exists()
+                )
+            elif resource not in TOP_LEVEL_RESOURCES:
                 project = self.tables.projects
                 statement = statement.join(
                     project,
@@ -148,7 +187,11 @@ class OperationsRepository:
                     & (project.c.workspace_id == table.c.workspace_id),
                 ).where(project.c.archived_at.is_(None))
         statement = (
-            statement.order_by(table.c.updated_at.desc(), table.c.id)
+            statement.order_by(
+                *([table.c.summary_date.desc()] if resource == "summaries" else []),
+                table.c.updated_at.desc(),
+                table.c.id,
+            )
             .limit(limit)
             .offset(offset)
         )
@@ -158,9 +201,9 @@ class OperationsRepository:
         ]
 
     def _labor_values(
-        self, attributes: Record, *, resolve_rate: bool, require_assignment: bool = True
+        self, attributes: Record, *, require_assignment: bool = True
     ) -> Record:
-        """Validate worker assignment and snapshot the rate effective on work date."""
+        """Validate hours against the existing worker assignment."""
         worker_id = cast(UUID, attributes["worker_id"])
         worker = self._load("workers", worker_id, lock=True)
         if require_assignment and worker["archived_at"] is not None:
@@ -178,40 +221,7 @@ class OperationsRepository:
             raise OperationsError(
                 409, "Assign the worker to this project before logging hours."
             )
-        rate = cast(Decimal, attributes.get("hourly_rate", Decimal(0)))
-        if resolve_rate:
-            rates = self.tables.rates
-            effective = (
-                self.connection.execute(
-                    select(rates)
-                    .where(
-                        rates.c.workspace_id == self.workspace_id,
-                        rates.c.worker_id == worker_id,
-                        rates.c.effective_from <= attributes["work_date"],
-                    )
-                    .order_by(rates.c.effective_from.desc())
-                    .limit(1)
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if effective is None:
-                raise OperationsError(409, "No labor rate exists for this work date.")
-            if effective["currency"] != self.currency:
-                raise OperationsError(
-                    409, "Worker rate currency does not match the workspace."
-                )
-            rate = effective["hourly_rate"]
-        cost = (rate * Decimal(cast(int, attributes["minutes"])) / 60).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
-        return {
-            "hourly_rate": rate,
-            "cost": cost,
-            "currency": self.currency
-            if resolve_rate
-            else attributes.get("currency", self.currency),
-        }
+        return {}
 
     def _assignment_worker(self, attributes: Record) -> None:
         worker = self._load("workers", cast(UUID, attributes["worker_id"]), lock=True)
@@ -248,6 +258,36 @@ class OperationsRepository:
             .where(table.c.workspace_id == self.workspace_id, table.c.id == project_id)
             .values(updated_at=occurred_at, revision=table.c.revision + 1)
         )
+
+    def _active_parent(self, resource: Resource, record: Record) -> None:
+        """Lock and validate the parent before touching a child."""
+        if resource == "attachments" and record.get("summary_id"):
+            parent = self._load(
+                "summaries", cast(UUID, record["summary_id"]), lock=True
+            )
+            if parent["archived_at"] is not None:
+                raise OperationsError(
+                    409, "Restore the summary before changing its links."
+                )
+        else:
+            self._active_project(cast(UUID, record["project_id"]))
+
+    def _touch_parent(
+        self, resource: Resource, record: Record, occurred_at: datetime
+    ) -> None:
+        """Advance parent revisions for attachment and other child changes."""
+        if resource == "attachments" and record.get("summary_id"):
+            table = self.tables.summaries
+            self.connection.execute(
+                table.update()
+                .where(
+                    table.c.workspace_id == self.workspace_id,
+                    table.c.id == record["summary_id"],
+                )
+                .values(updated_at=occurred_at, revision=table.c.revision + 1)
+            )
+        else:
+            self._touch_project(cast(UUID, record["project_id"]), occurred_at)
 
     def create(self, resource: Resource, payload: Record) -> Record:
         """Create once per request UUID, atomically recording its audit and replay."""
@@ -286,20 +326,19 @@ class OperationsRepository:
                 raise OperationsError(
                     409, "Request ID already used for another submission."
                 )
-            return cast(Record, previous["result"])
+            return serialize(cast(Record, previous["result"]))
         occurred_at = datetime.now(timezone.utc)
         if resource == "summaries":
             attributes["source"] = "manual"
         if resource not in TOP_LEVEL_RESOURCES:
-            project_id = cast(UUID, attributes["project_id"])
-            self._active_project(project_id)
+            self._active_parent(resource, attributes)
             if resource == "tasks":
                 attributes.update(completed=False, completed_at=None)
             elif resource == "labor_entries":
-                attributes.update(self._labor_values(attributes, resolve_rate=True))
+                attributes.update(self._labor_values(attributes))
             elif resource == "assignments":
                 self._assignment_worker(attributes)
-            self._touch_project(project_id, occurred_at)
+            self._touch_parent(resource, attributes, occurred_at)
         record = {
             **attributes,
             "id": uuid4(),
@@ -334,7 +373,7 @@ class OperationsRepository:
         if resource not in TOP_LEVEL_RESOURCES:
             # Lock parent before child in every mutation to avoid archive/write races.
             task = self._load(resource, record_id)
-            self._active_project(cast(UUID, task["project_id"]))
+            self._active_parent(resource, task)
         before = self._load(resource, record_id, lock=True)
         if before["revision"] != payload["revision"]:
             raise OperationsError(409, "Record changed. Reload before saving.")
@@ -356,10 +395,6 @@ class OperationsRepository:
                     self._labor_values(
                         merged,
                         require_assignment=merged["worker_id"] != before["worker_id"],
-                        resolve_rate=any(
-                            merged[key] != before[key]
-                            for key in ("worker_id", "work_date")
-                        ),
                     )
                 )
         if resource == "assignments" and action == "restore":
@@ -375,7 +410,7 @@ class OperationsRepository:
         )
         after = {**before, **changes}
         if resource not in TOP_LEVEL_RESOURCES:
-            self._touch_project(cast(UUID, before["project_id"]), occurred_at)
+            self._touch_parent(resource, before, occurred_at)
         self._audit(resource, action, before, after)
         return serialize(after)
 
@@ -400,52 +435,8 @@ class OperationsRepository:
             ).mappings()
         ]
 
-    def project_financials(self) -> dict[str, Record]:
-        """Combine financial snapshots with all unvoided historical labor costs."""
-        if not self.financials_enabled:
-            return {}
-        financials, labor = self.tables.financials, self.tables.labor_entries
-        if self.connection.execute(
-            select(labor.c.id)
-            .where(
-                labor.c.workspace_id == self.workspace_id,
-                labor.c.archived_at.is_(None),
-                labor.c.currency != self.currency,
-            )
-            .limit(1)
-        ).first():
-            raise OperationsError(
-                503, "Labor currency does not match the financial source."
-            )
-        costs = {
-            row.project_id: row.cost
-            for row in self.connection.execute(
-                select(labor.c.project_id, func.sum(labor.c.cost).label("cost"))
-                .where(
-                    labor.c.workspace_id == self.workspace_id,
-                    labor.c.archived_at.is_(None),
-                )
-                .group_by(labor.c.project_id)
-            )
-        }
-        result: dict[str, Record] = {}
-        for row in self.connection.execute(
-            select(financials).where(financials.c.workspace_id == self.workspace_id)
-        ).mappings():
-            if row["currency"] != self.currency:
-                raise OperationsError(
-                    503, "Financial source currency does not match the workspace."
-                )
-            cost = costs.get(row["project_id"], Decimal(0))
-            result[str(row["project_id"])] = {
-                **dict(row),
-                "labor_cost": cost,
-                "labor_due": max(cost - row["labor_paid"], Decimal(0)),
-            }
-        return result
-
     def summary(self, day: date | None = None) -> Record:
-        """Calculate today's tasks, open jobs, and optional gross financial metrics."""
+        """Calculate daily task counts, open jobs, and total recorded labor hours."""
         zone = ZoneInfo(self.business_timezone)
         day = day or datetime.now(zone).date()
         start = datetime.combine(day, time.min, zone).astimezone(timezone.utc)
@@ -503,48 +494,28 @@ class OperationsRepository:
                 projects.c.status.notin_(["completed", "cancelled"]),
             )
         )
-        financials = self.project_financials()
-        # Incomplete snapshots must not produce deceptively partial workspace totals.
-        project_count = self.connection.scalar(
-            select(func.count())
-            .select_from(projects)
-            .where(projects.c.workspace_id == self.workspace_id)
-        )
-        available = (
-            self.financials_enabled
-            and len(financials) == project_count
-            and project_count != 0
-        )
-        revenue = sum(
-            (cast(Decimal, row["revenue"]) for row in financials.values()), Decimal(0)
-        )
-        cost = sum(
-            (
-                cast(Decimal, row["non_labor_cost"]) + cast(Decimal, row["labor_cost"])
-                for row in financials.values()
-            ),
-            Decimal(0),
-        )
-        labor_due = sum(
-            (cast(Decimal, row["labor_due"]) for row in financials.values()), Decimal(0)
+        labor = self.tables.labor_entries
+        total_minutes = self.connection.scalar(
+            select(func.coalesce(func.sum(labor.c.minutes), 0))
+            .select_from(labor)
+            .join(
+                projects,
+                (projects.c.id == labor.c.project_id)
+                & (projects.c.workspace_id == labor.c.workspace_id),
+            )
+            .where(
+                labor.c.workspace_id == self.workspace_id,
+                labor.c.archived_at.is_(None),
+                projects.c.archived_at.is_(None),
+            )
         )
         return {
+            "total_labor_hours": float(total_minutes or 0) / 60,
             "day": day.isoformat(),
             "timezone": self.business_timezone,
-            "currency": self.currency,
             "items_today": total,
             "completed_today": completed,
             "open_jobs": open_jobs,
             "tasks": today_tasks,
             "tasks_has_more": cast(int, total) > 100,
-            "labor_due": str(labor_due) if available else None,
-            "margin_percent": str(
-                ((revenue - cost) / revenue * 100).quantize(Decimal("0.01"))
-            )
-            if available and revenue > 0
-            else None,
-            "financial_period": "all_recorded_work",
-            "project_financials": {
-                key: serialize(value) for key, value in financials.items()
-            },
         }

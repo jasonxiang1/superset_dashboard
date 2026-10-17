@@ -41,6 +41,8 @@ from superset.operations.repository import (
 )
 from superset.operations.schemas import (
     AssignmentCreateSchema,
+    AttachmentCreateSchema,
+    AttachmentUpdateSchema,
     LaborCreateSchema,
     LaborUpdateSchema,
     NoteCreateSchema,
@@ -53,6 +55,8 @@ from superset.operations.schemas import (
     TaskCompletionSchema,
     TaskCreateSchema,
     TaskUpdateSchema,
+    WorkerCreateSchema,
+    WorkerUpdateSchema,
 )
 from superset.operations.tables import OperationsTables
 from superset.views.base_api import BaseSupersetApi
@@ -70,6 +74,8 @@ READ_RESOURCES = {
     "summaries",
 }
 CREATE_SCHEMAS: dict[str, type[Schema]] = {
+    "workers": WorkerCreateSchema,
+    "attachments": AttachmentCreateSchema,
     "projects": ProjectCreateSchema,
     "tasks": TaskCreateSchema,
     "notes": NoteCreateSchema,
@@ -78,6 +84,8 @@ CREATE_SCHEMAS: dict[str, type[Schema]] = {
     "summaries": SummaryCreateSchema,
 }
 UPDATE_SCHEMAS: dict[str, type[Schema]] = {
+    "workers": WorkerUpdateSchema,
+    "attachments": AttachmentUpdateSchema,
     "projects": ProjectUpdateSchema,
     "tasks": TaskUpdateSchema,
     "notes": NoteUpdateSchema,
@@ -94,7 +102,7 @@ def resource_name(value: str) -> Resource:
 
 
 def mutable_resource(value: str) -> Resource:
-    """Keep directory and attachment source records read-only."""
+    """Allow mutations only for resources with validated create schemas."""
     name = resource_name(value)
     if name not in CREATE_SCHEMAS:
         raise OperationsError(405, "This resource is read-only.")
@@ -158,8 +166,6 @@ def repository_for(workspace_id: UUID) -> Iterator[OperationsRepository]:
                 workspace_id,
                 str(g.user.id),
                 business_timezone=current_app.config["OPERATIONS_TIMEZONE"],
-                currency=current_app.config["OPERATIONS_CURRENCY"],
-                financials_enabled=current_app.config["OPERATIONS_FINANCIALS_ENABLED"],
             )
 
 
@@ -171,6 +177,7 @@ class OperationsRestApi(BaseSupersetApi):
     allow_browser_login = True
     base_permissions = [
         "can_read",
+        "can_chat",
         "can_create",
         "can_edit",
         "can_remove",
@@ -186,6 +193,8 @@ class OperationsRestApi(BaseSupersetApi):
         ProjectUpdateSchema,
         TaskCreateSchema,
         TaskUpdateSchema,
+        WorkerCreateSchema,
+        WorkerUpdateSchema,
         RevisionSchema,
         TaskCompletionSchema,
         NoteCreateSchema,
@@ -195,6 +204,8 @@ class OperationsRestApi(BaseSupersetApi):
         AssignmentCreateSchema,
         SummaryCreateSchema,
         SummaryUpdateSchema,
+        AttachmentCreateSchema,
+        AttachmentUpdateSchema,
     )
 
     def _run(
@@ -265,6 +276,7 @@ class OperationsRestApi(BaseSupersetApi):
                 "capabilities": {
                     action: security_manager.can_access(f"can_{action}", "Operations")
                     for action in (
+                        "chat",
                         "create",
                         "edit",
                         "remove",
@@ -276,7 +288,6 @@ class OperationsRestApi(BaseSupersetApi):
                     )
                 },
                 "timezone": current_app.config["OPERATIONS_TIMEZONE"],
-                "currency": current_app.config["OPERATIONS_CURRENCY"],
             },
         )
 
@@ -318,6 +329,11 @@ class OperationsRestApi(BaseSupersetApi):
                     if request.args.get("summary_date")
                     else None
                 )
+                summary_id = (
+                    UUID(request.args["summary_id"])
+                    if request.args.get("summary_id")
+                    else None
+                )
                 project_id = (
                     UUID(request.args["project_id"])
                     if request.args.get("project_id")
@@ -339,6 +355,7 @@ class OperationsRestApi(BaseSupersetApi):
                 offset=offset,
                 project_id=project_id,
                 summary_date=summary_date,
+                summary_id=summary_id,
             )
 
         return self._run(workspace_id, read)
@@ -530,3 +547,47 @@ class OperationsRestApi(BaseSupersetApi):
             return repository.history(mutable_resource(resource), record_id, offset)
 
         return self._run(workspace_id, read)
+
+    @expose("/workspaces/<uuid:workspace_id>/chat", methods=("POST",))
+    @protect()
+    @permission_name("chat")
+    @safe
+    def chat(self, workspace_id: UUID) -> Response:
+        """Read fresh context and stage changes for explicit approval.
+        ---
+        post:
+          summary: Ask Jason about Operations
+          responses:
+            200:
+              description: Plain text reply and optional proposal
+        """
+        from superset.operations.chat import ask, OperationsChatSchema
+
+        return self._run(
+            workspace_id, lambda repo: ask(repo, load_payload(OperationsChatSchema()))
+        )
+
+    @expose(
+        "/workspaces/<uuid:workspace_id>/chat/proposals/<uuid:proposal_id>",
+        methods=("POST",),
+    )
+    @protect()
+    @permission_name("chat")
+    @safe
+    def decide_proposal(self, workspace_id: UUID, proposal_id: UUID) -> Response:
+        """Apply or cancel an exact proposal in its authenticated conversation.
+        ---
+        post:
+          summary: Decide an Operations proposal
+          responses:
+            200:
+              description: Applied changes or cancellation
+        """
+        from superset.operations.chat import decide, ProposalDecisionSchema
+
+        return self._run(
+            workspace_id,
+            lambda repo: decide(
+                repo, proposal_id, load_payload(ProposalDecisionSchema())
+            ),
+        )

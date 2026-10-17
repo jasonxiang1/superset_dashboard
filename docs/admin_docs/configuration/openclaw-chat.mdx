@@ -142,3 +142,11 @@ Messages are limited to 8,000 characters, request bodies to 256 KiB, and agent
 responses to 1 MiB. Excessive context is rejected rather than silently truncated.
 Streaming, persistent browser history, and dashboard-editing controls are outside
 this version.
+
+## Operations chat
+
+Operations reuses this gateway and existing agent through its own scoped routes,
+conversation identifiers, and explicit proposal approvals. Grant `can_chat` on
+Operations and `can_read` on OpenClaw only to trusted Operations users. See
+[Operations configuration](./operations) for migration, linked documents and the
+limits of approval enforcement when the existing agent has independent write tools.

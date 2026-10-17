@@ -41,14 +41,18 @@ export const statusLabels = {
   cancelled: t('Cancelled'),
 };
 export const resourceLabels = {
+  workers: t('Worker'),
   projects: t('Project'),
   tasks: t('Task'),
   labor_entries: t('Labor entry'),
   notes: t('Project note'),
   assignments: t('Worker assignment'),
   summaries: t('Summary update'),
+  attachments: t('Photo or document link'),
 };
 interface Values {
+  name?: string;
+  url?: string;
   title?: string;
   description?: string;
   status?: string;
@@ -72,6 +76,8 @@ function localDateTime(iso: string | null): string {
 function formValues(record?: WritableRecord): Values {
   if (!record) return {};
   return {
+    ...('name' in record ? { name: record.name } : {}),
+    ...('url' in record ? { url: record.url } : {}),
     ...('title' in record ? { title: record.title } : {}),
     ...('description' in record ? { description: record.description } : {}),
     ...('status' in record ? { status: record.status } : {}),
@@ -122,7 +128,7 @@ export default function RecordForm({
   const requestId = useRef(uuid());
   const submitted = useRef<Record<string, unknown>>();
   const [retryOnly, setRetryOnly] = useState(false);
-  const { resource, projectId } = dialog;
+  const { resource, projectId, summaryId } = dialog;
   const isProject = resource === 'projects';
   const isTask = resource === 'tasks';
   const isLabor = resource === 'labor_entries';
@@ -143,6 +149,7 @@ export default function RecordForm({
       payload = {
         ...payload,
         request_id: requestId.current,
+        ...(summaryId ? { summary_id: summaryId } : {}),
         ...(!isProject && projectId ? { project_id: projectId } : {}),
       };
     if (retryOnly && submitted.current) payload = submitted.current;
@@ -229,15 +236,50 @@ export default function RecordForm({
           ...formValues(record),
         }}
       >
-        {!isProject && !isSummary && !record && !projectId && (
-          <FormItem label={t('Project')} name="project_id" rules={required}>
-            <Select
-              aria-label={t('Project')}
-              options={projects
-                .filter(project => !project.archived_at)
-                .map(project => ({ value: project.id, label: project.title }))}
-            />
+        {resource !== 'workers' &&
+          !isProject &&
+          !isSummary &&
+          !record &&
+          !projectId &&
+          !summaryId && (
+            <FormItem label={t('Project')} name="project_id" rules={required}>
+              <Select
+                aria-label={t('Project')}
+                options={projects
+                  .filter(project => !project.archived_at)
+                  .map(project => ({
+                    value: project.id,
+                    label: project.title,
+                  }))}
+              />
+            </FormItem>
+          )}
+        {resource === 'workers' && (
+          <FormItem
+            label={t('Name')}
+            name="name"
+            rules={[...required, { whitespace: true }, { max: 200 }]}
+          >
+            <Input maxLength={200} />
           </FormItem>
+        )}
+        {resource === 'attachments' && (
+          <>
+            <FormItem
+              label={t('Name')}
+              name="name"
+              rules={[...required, { max: 200 }]}
+            >
+              <Input maxLength={200} />
+            </FormItem>
+            <FormItem
+              label={t('Link URL')}
+              name="url"
+              rules={[...required, { type: 'url' }]}
+            >
+              <Input maxLength={4096} />
+            </FormItem>
+          </>
         )}
         {(isProject || isTask || isSummary) && (
           <>

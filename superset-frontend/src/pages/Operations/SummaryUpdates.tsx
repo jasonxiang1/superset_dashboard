@@ -28,23 +28,28 @@ import {
   Typography,
 } from '@superset-ui/core/components';
 import { Input } from '@superset-ui/core/components/Input';
-import { describeError, listAll } from './api';
+import { describeError, listRecords } from './api';
 import { Capabilities, DialogState, SummaryUpdate } from './types';
 import RecordForm from './RecordForm';
 import RecordActions from './RecordActions';
+import Attachments from './Attachments';
 
 interface Props {
   workspace: string;
   day: string;
   capabilities: Capabilities;
+  externalRefreshToken?: number;
 }
 /** Show every workspace summary for the selected date, regardless of source. */
 export default function SummaryUpdates({
   workspace,
   day,
   capabilities,
+  externalRefreshToken = 0,
 }: Props) {
   const [selectedDay, setSelectedDay] = useState(day);
+  const [byDate, setByDate] = useState(false);
+  const [offset, setOffset] = useState(0);
   const [removed, setRemoved] = useState(false);
   const [updates, setUpdates] = useState<SummaryUpdate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,11 +61,15 @@ export default function SummaryUpdates({
     const controller = new AbortController();
     setLoading(true);
     setError('');
-    setUpdates([]);
-    listAll(
+    listRecords(
       workspace,
       'summaries',
-      { summaryDate: selectedDay, archived: removed },
+      {
+        summaryDate: byDate ? selectedDay : undefined,
+        archived: removed,
+        offset,
+        limit: 20,
+      },
       controller.signal,
     )
       .then(records => {
@@ -74,28 +83,73 @@ export default function SummaryUpdates({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [workspace, selectedDay, removed, refreshToken]);
+  }, [
+    workspace,
+    selectedDay,
+    removed,
+    refreshToken,
+    byDate,
+    offset,
+    externalRefreshToken,
+  ]);
   return (
     <Card title={t('Summary updates')}>
-      <Flex vertical gap="middle">
+      <Flex
+        vertical
+        gap="middle"
+        data-summary-mode={byDate ? 'date' : 'all'}
+        data-summary-date={byDate ? selectedDay : ''}
+        data-summary-offset={offset}
+        data-summary-removed={removed}
+      >
         <Flex wrap gap="small" align="center">
-          <label htmlFor="operations-summary-day">
-            {t('View all updates for date')}
-          </label>
-          <Input
-            id="operations-summary-day"
-            type="date"
-            value={selectedDay}
+          <Button
             disabled={Boolean(dialog)}
-            onChange={event => {
-              if (event.target.value) setSelectedDay(event.target.value);
+            onClick={() => {
+              setByDate(false);
+              setOffset(0);
             }}
-          />
+            buttonStyle={!byDate ? 'primary' : 'tertiary'}
+          >
+            {t('All updates')}
+          </Button>
+          <Button
+            disabled={Boolean(dialog)}
+            onClick={() => {
+              setByDate(true);
+              setOffset(0);
+            }}
+            buttonStyle={byDate ? 'primary' : 'tertiary'}
+          >
+            {t('By date')}
+          </Button>
+          {byDate && (
+            <>
+              <label htmlFor="operations-summary-day">
+                {t('View all updates for date')}
+              </label>
+              <Input
+                id="operations-summary-day"
+                type="date"
+                value={selectedDay}
+                disabled={Boolean(dialog)}
+                onChange={event => {
+                  if (event.target.value) {
+                    setSelectedDay(event.target.value);
+                    setOffset(0);
+                  }
+                }}
+              />
+            </>
+          )}
           <Switch
             aria-label={t('Include removed summaries')}
             checked={removed}
             disabled={Boolean(dialog)}
-            onChange={setRemoved}
+            onChange={value => {
+              setRemoved(value);
+              setOffset(0);
+            }}
           />
           <Typography.Text>{t('Include removed summaries')}</Typography.Text>
           {capabilities.create && (
@@ -115,12 +169,19 @@ export default function SummaryUpdates({
         {loading && <Loading />}
         {!loading && !error && updates.length === 0 && (
           <Typography.Text type="secondary">
-            {t('No summaries for this date')}
+            {byDate ? t('No summaries for this date') : t('No summaries')}
           </Typography.Text>
         )}
         {updates.map(update => (
-          <Card key={update.id} size="small" title={update.title}>
+          <Card
+            data-operations-resource="summaries"
+            data-operations-record={update.id}
+            key={update.id}
+            size="small"
+            title={update.title}
+          >
             <Typography.Text type="secondary">
+              {update.summary_date} ·{' '}
               {update.source === 'manual'
                 ? t('Manual entry')
                 : t('PostgreSQL integration')}
@@ -137,8 +198,33 @@ export default function SummaryUpdates({
               onEdit={setDialog}
               onChanged={refresh}
             />
+            <Attachments
+              workspace={workspace}
+              summaryId={update.id}
+              archived={Boolean(update.archived_at)}
+              capabilities={capabilities}
+              refreshToken={refreshToken}
+              onChanged={refresh}
+            />
           </Card>
         ))}
+        <Flex gap="small">
+          <Button
+            disabled={loading || offset === 0}
+            onClick={() => setOffset(value => Math.max(0, value - 20))}
+          >
+            {t('Previous')}
+          </Button>
+          <Typography.Text>
+            {t('Page %s', String(offset / 20 + 1))}
+          </Typography.Text>
+          <Button
+            disabled={loading || updates.length < 20}
+            onClick={() => setOffset(value => value + 20)}
+          >
+            {t('Next')}
+          </Button>
+        </Flex>
       </Flex>
       {dialog && (
         <RecordForm

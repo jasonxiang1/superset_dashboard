@@ -70,14 +70,17 @@ export const listRecords = <R extends Resource>(
     archived?: boolean;
     offset?: number;
     summaryDate?: string;
+    summaryId?: string;
+    limit?: number;
   } = {},
   signal?: AbortSignal,
 ) => {
   const query = new URLSearchParams({
-    limit: '100',
+    limit: String(options.limit || 100),
     offset: String(options.offset || 0),
     include_archived: String(Boolean(options.archived)),
   });
+  if (options.summaryId) query.set('summary_id', options.summaryId);
   if (options.projectId) query.set('project_id', options.projectId);
   if (options.summaryDate) query.set('summary_date', options.summaryDate);
   return getResult<RecordMap[R][]>(
@@ -148,17 +151,6 @@ export async function describeError(
   }
   return { message: t('Could not save or load records. Please retry.') };
 }
-export function formatMoney(
-  value: string | null | undefined,
-  currency: string,
-): string {
-  return value == null
-    ? t('Unavailable')
-    : new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(
-        Number(value),
-      );
-}
-
 /** Traverse explicit pages so status groups and worker selectors are complete. */
 export async function listAll<R extends Resource>(
   workspace: string,
@@ -167,6 +159,8 @@ export async function listAll<R extends Resource>(
     projectId?: string;
     archived?: boolean;
     summaryDate?: string;
+    summaryId?: string;
+    limit?: number;
   } = {},
   signal?: AbortSignal,
 ): Promise<RecordMap[R][]> {

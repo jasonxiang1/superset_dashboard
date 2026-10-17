@@ -230,9 +230,6 @@ OPERATIONS_SCHEMA: str | None = None
 OPERATIONS_WORKSPACE_ROLES: dict[str, list[str]] = {}
 OPERATIONS_WORKSPACE_NAMES: dict[str, str] = {}
 OPERATIONS_TIMEZONE = "UTC"
-OPERATIONS_CURRENCY = "USD"
-# Enable only after provisioning and mapping the financial snapshot source.
-OPERATIONS_FINANCIALS_ENABLED = False
 
 # this 2 settings are used by dashboard period force refresh feature
 # When user choose auto force refresh frequency

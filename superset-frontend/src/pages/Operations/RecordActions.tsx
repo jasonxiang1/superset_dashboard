@@ -54,11 +54,13 @@ export default function RecordActions({
   const label =
     'title' in record
       ? record.title
-      : 'body' in record
-        ? record.body.slice(0, 60)
-        : 'work_date' in record
-          ? t('Labor entry: %s', record.work_date)
-          : t('Worker assignment');
+      : 'name' in record
+        ? record.name
+        : 'body' in record
+          ? record.body.slice(0, 60)
+          : 'work_date' in record
+            ? t('Labor entry: %s', record.work_date)
+            : t('Worker assignment');
   const mutate = async () => {
     setPending(true);
     try {

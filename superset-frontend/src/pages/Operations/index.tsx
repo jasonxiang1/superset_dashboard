@@ -41,7 +41,6 @@ import { RoutePaths } from 'src/views/routePaths';
 import {
   changeRecord,
   describeError,
-  formatMoney,
   getBrief,
   getSettings,
   listAll,
@@ -60,6 +59,7 @@ import RecordForm, { statusLabels } from './RecordForm';
 import RecordActions from './RecordActions';
 import ProjectDetails from './ProjectDetails';
 import SummaryUpdates from './SummaryUpdates';
+import OperationsChat from './OperationsChat';
 
 interface Data {
   workspace: string;
@@ -78,6 +78,7 @@ export default function Operations() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [removed, setRemoved] = useState(false);
+  const [removedWorkers, setRemovedWorkers] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [dialog, setDialog] = useState<DialogState>();
   const [pendingTask, setPendingTask] = useState<string>();
@@ -187,6 +188,14 @@ export default function Operations() {
           >
             {t('Projects')}
           </Button>
+          {current && workspace && settings?.capabilities.chat && (
+            <OperationsChat
+              key={`${workspace}:${location.pathname}`}
+              workspace={workspace}
+              view={projectsView ? 'projects' : 'daily_brief'}
+              onChanged={refresh}
+            />
+          )}
           <Button
             onClick={refresh}
             disabled={loading || (!workspace && !error)}
@@ -251,13 +260,15 @@ export default function Operations() {
                     ),
                   },
                   {
-                    title: t('Labor due'),
-                    value: formatMoney(
-                      current.brief.labor_due,
-                      current.brief.currency,
+                    title: t('Total labor hours'),
+                    value: current.brief.total_labor_hours.toLocaleString(
+                      undefined,
+                      {
+                        maximumFractionDigits: 2,
+                      },
                     ),
                     help: t(
-                      'Accrued labor less recorded labor payments across all projects, including archived projects. Requires complete financial source data.',
+                      'Total logged hours across all dates, excluding removed entries and removed projects.',
                     ),
                   },
                   {
@@ -294,6 +305,7 @@ export default function Operations() {
                 workspace={workspace}
                 day={current.brief.day}
                 capabilities={settings.capabilities}
+                externalRefreshToken={refreshToken}
               />
               <Card title={t('Today’s commitments')}>
                 <Progress
@@ -322,6 +334,8 @@ export default function Operations() {
                   )}
                   {current.brief.tasks.map(task => (
                     <Flex
+                      data-operations-resource="tasks"
+                      data-operations-record={task.id}
                       key={task.id}
                       justify="space-between"
                       wrap
@@ -398,6 +412,83 @@ export default function Operations() {
                   </Button>
                 )}
               </Flex>
+              <Collapse
+                items={[
+                  {
+                    key: 'workers',
+                    label: t('Worker directory'),
+                    children: (
+                      <Flex vertical gap="middle">
+                        <Typography.Text type="secondary">
+                          {t(
+                            'Manage workers across projects. Removing a worker preserves their assignments and logged hours.',
+                          )}
+                        </Typography.Text>
+                        <Flex
+                          justify="space-between"
+                          align="center"
+                          wrap
+                          gap="small"
+                        >
+                          <Flex gap="small" align="center">
+                            <Switch
+                              aria-label={t('Include removed workers')}
+                              checked={removedWorkers}
+                              onChange={setRemovedWorkers}
+                            />
+                            <Typography.Text>
+                              {t('Include removed workers')}
+                            </Typography.Text>
+                          </Flex>
+                          {settings.capabilities.create && (
+                            <Button
+                              disabled={loading}
+                              onClick={() => setDialog({ resource: 'workers' })}
+                            >
+                              {t('Add worker')}
+                            </Button>
+                          )}
+                        </Flex>
+                        {current.workers.filter(
+                          worker => removedWorkers || !worker.archived_at,
+                        ).length === 0 && (
+                          <Typography.Text type="secondary">
+                            {t('No workers')}
+                          </Typography.Text>
+                        )}
+                        {current.workers
+                          .filter(
+                            worker => removedWorkers || !worker.archived_at,
+                          )
+                          .map(worker => (
+                            <Flex
+                              key={worker.id}
+                              justify="space-between"
+                              align="center"
+                              wrap
+                              gap="small"
+                              data-operations-resource="workers"
+                              data-operations-record={worker.id}
+                            >
+                              <Typography.Text>
+                                {worker.name}
+                                {worker.archived_at ? ` · ${t('Removed')}` : ''}
+                              </Typography.Text>
+                              <RecordActions
+                                resource="workers"
+                                record={worker}
+                                workspace={workspace}
+                                capabilities={settings.capabilities}
+                                onEdit={setDialog}
+                                onChanged={refresh}
+                              />
+                            </Flex>
+                          ))}
+                      </Flex>
+                    ),
+                  },
+                ]}
+              />
               {current.projects.length === 0 && (
                 <Card>
                   <Typography.Text type="secondary">
@@ -421,8 +512,6 @@ export default function Operations() {
                         <Collapse
                           ghost
                           items={projects.map(project => {
-                            const financial =
-                              current.brief.project_financials[project.id];
                             const workerNames = current.assignments
                               .filter(item => item.project_id === project.id)
                               .map(
@@ -436,6 +525,8 @@ export default function Operations() {
                               label: (
                                 <Flex vertical gap="small">
                                   <Flex
+                                    data-operations-resource="projects"
+                                    data-operations-record={project.id}
                                     justify="space-between"
                                     wrap
                                     gap="small"
@@ -450,19 +541,6 @@ export default function Operations() {
                                       {new Date(
                                         project.updated_at,
                                       ).toLocaleString()}
-                                    </Typography.Text>
-                                  </Flex>
-                                  <Flex gap="middle" wrap>
-                                    <Typography.Text
-                                      style={{ color: theme.colorError }}
-                                    >
-                                      {t(
-                                        'Labor due: %s',
-                                        formatMoney(
-                                          financial?.labor_due,
-                                          current.brief.currency,
-                                        ),
-                                      )}
                                     </Typography.Text>
                                   </Flex>
                                   {workerNames.length > 0 && (

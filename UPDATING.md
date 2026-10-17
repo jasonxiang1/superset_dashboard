@@ -19,6 +19,18 @@ under the License.
 
 # Updating Superset
 
+### Operations API: hours-only records, linked attachments and chat
+
+Operations no longer returns or calculates monetary fields, including in history
+and creation replays. Remove `OPERATIONS_CURRENCY` and
+`OPERATIONS_FINANCIALS_ENABLED` from deployment configuration. Legacy financial
+values remain stored but are not used. Upgrade the external business schema using
+`python -m superset.operations.migrate --schema <schema>` after backup/rehearsal,
+then run `superset init`. Deploy backend and rebuilt frontend together. The upgrade
+adds summary attachment ownership and approved-chat proposal storage; no Superset
+metadata migration is introduced. See the Operations configuration guide.
+
+
 This file documents any backwards-incompatible changes in Superset and
 assists people when migrating to a new version.
 

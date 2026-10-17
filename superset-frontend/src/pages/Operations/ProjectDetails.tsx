@@ -27,10 +27,9 @@ import {
   Switch,
   Typography,
 } from '@superset-ui/core/components';
-import { changeRecord, describeError, formatMoney, listAll } from './api';
+import { changeRecord, describeError, listAll } from './api';
 import {
   Assignment,
-  Attachment,
   Capabilities,
   DialogState,
   LaborEntry,
@@ -40,6 +39,7 @@ import {
   Worker,
 } from './types';
 import RecordActions from './RecordActions';
+import Attachments from './Attachments';
 
 interface Props {
   project: Project;
@@ -55,7 +55,6 @@ interface Details {
   notes: ProjectNote[];
   labor: LaborEntry[];
   assignments: Assignment[];
-  attachments: Attachment[];
 }
 /** Load scoped project children; refresh after writes without collapsing the row. */
 export default function ProjectDetails({
@@ -85,11 +84,10 @@ export default function ProjectDetails({
       listAll(workspace, 'notes', options, controller.signal),
       listAll(workspace, 'labor_entries', options, controller.signal),
       listAll(workspace, 'assignments', options, controller.signal),
-      listAll(workspace, 'attachments', options, controller.signal),
     ])
-      .then(([tasks, notes, labor, assignments, attachments]) => {
+      .then(([tasks, notes, labor, assignments]) => {
         if (!controller.signal.aborted)
-          setDetails({ tasks, notes, labor, assignments, attachments });
+          setDetails({ tasks, notes, labor, assignments });
       })
       .catch(async failure => {
         const detail = await describeError(failure);
@@ -214,7 +212,14 @@ export default function ProjectDetails({
             </Typography.Text>
           )}
           {details.assignments.map(assignment => (
-            <Flex key={assignment.id} justify="space-between" gap="small" wrap>
+            <Flex
+              data-operations-resource="assignments"
+              data-operations-record={assignment.id}
+              key={assignment.id}
+              justify="space-between"
+              gap="small"
+              wrap
+            >
               <Typography.Text delete={Boolean(assignment.archived_at)}>
                 {name(assignment.worker_id)}
               </Typography.Text>
@@ -226,7 +231,14 @@ export default function ProjectDetails({
             <Typography.Text type="secondary">{t('No tasks')}</Typography.Text>
           )}
           {details.tasks.map(task => (
-            <Flex key={task.id} justify="space-between" gap="small" wrap>
+            <Flex
+              data-operations-resource="tasks"
+              data-operations-record={task.id}
+              key={task.id}
+              justify="space-between"
+              gap="small"
+              wrap
+            >
               <Flex vertical>
                 <Checkbox
                   checked={task.completed}
@@ -259,21 +271,19 @@ export default function ProjectDetails({
             </Typography.Text>
           )}
           {details.labor.map(entry => (
-            <Flex key={entry.id} vertical>
+            <Flex
+              data-operations-resource="labor_entries"
+              data-operations-record={entry.id}
+              key={entry.id}
+              vertical
+            >
               <Flex justify="space-between" gap="small" wrap>
                 <Typography.Text delete={Boolean(entry.archived_at)}>
                   {name(entry.worker_id)} · {entry.work_date} ·{' '}
-                  {(entry.minutes / 60).toFixed(2)} {t('hours')} ·{' '}
-                  {formatMoney(entry.cost, entry.currency)}
+                  {(entry.minutes / 60).toFixed(2)} {t('hours')}
                 </Typography.Text>
                 {actions('labor_entries', entry)}
               </Flex>
-              <Typography.Text type="secondary">
-                {t(
-                  'Hourly rate: %s',
-                  formatMoney(entry.hourly_rate, entry.currency),
-                )}
-              </Typography.Text>
               {entry.note && (
                 <Typography.Paragraph>{entry.note}</Typography.Paragraph>
               )}
@@ -286,7 +296,12 @@ export default function ProjectDetails({
             </Typography.Text>
           )}
           {details.notes.map(note => (
-            <Flex key={note.id} vertical>
+            <Flex
+              data-operations-resource="notes"
+              data-operations-record={note.id}
+              key={note.id}
+              vertical
+            >
               <Typography.Paragraph delete={Boolean(note.archived_at)}>
                 {note.body}
               </Typography.Paragraph>
@@ -298,32 +313,14 @@ export default function ProjectDetails({
               </Flex>
             </Flex>
           ))}
-          <Typography.Title level={5}>
-            {t('Photos and documents')}
-          </Typography.Title>
-          {details.attachments.length === 0 && (
-            <Typography.Text type="secondary">
-              {t('No attachments')}
-            </Typography.Text>
-          )}
-          {details.attachments
-            .filter(attachment => !attachment.archived_at)
-            .map(attachment =>
-              /^https?:\/\//i.test(attachment.url) ? (
-                <a
-                  key={attachment.id}
-                  href={attachment.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {attachment.name}
-                </a>
-              ) : (
-                <Typography.Text key={attachment.id}>
-                  {attachment.name}
-                </Typography.Text>
-              ),
-            )}
+          <Attachments
+            workspace={workspace}
+            projectId={project.id}
+            archived={Boolean(project.archived_at)}
+            capabilities={capabilities}
+            refreshToken={refreshToken}
+            onChanged={onChanged}
+          />
         </>
       )}
     </Flex>

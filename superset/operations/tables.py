@@ -93,6 +93,9 @@ class OperationsTables:
             Column("title", String(200), nullable=False),
             Column("body", Text, nullable=False),
             Column("source", String(20), nullable=False),
+            UniqueConstraint(
+                "workspace_id", "id", name="uq_operations_summaries_workspace_id"
+            ),
             CheckConstraint("revision > 0"),
             CheckConstraint("source IN ('manual', 'postgresql')"),
         )
@@ -100,22 +103,6 @@ class OperationsTables:
             "ix_operations_summaries_day",
             self.summaries.c.workspace_id,
             self.summaries.c.summary_date,
-        )
-        self.rates = Table(
-            "operations_worker_rates",
-            self.metadata,
-            Column("id", Uuid, primary_key=True),
-            Column("workspace_id", Uuid, nullable=False),
-            Column("worker_id", Uuid, nullable=False),
-            Column("effective_from", Date, nullable=False),
-            Column("hourly_rate", Numeric(12, 4), nullable=False),
-            Column("currency", String(3), nullable=False),
-            ForeignKeyConstraint(
-                ["workspace_id", "worker_id"],
-                [self.workers.c.workspace_id, self.workers.c.id],
-            ),
-            UniqueConstraint("workspace_id", "worker_id", "effective_from"),
-            CheckConstraint("hourly_rate >= 0"),
         )
         self.notes = self._project_table(
             "operations_notes",
@@ -143,9 +130,9 @@ class OperationsTables:
             Column("work_date", Date, nullable=False),
             Column("minutes", Integer, nullable=False),
             Column("note", Text, nullable=False),
-            Column("hourly_rate", Numeric(12, 4), nullable=False),
-            Column("cost", Numeric(18, 2), nullable=False),
-            Column("currency", String(3), nullable=False),
+            Column("hourly_rate", Numeric(12, 4)),
+            Column("cost", Numeric(18, 2)),
+            Column("currency", String(3)),
             ForeignKeyConstraint(
                 ["workspace_id", "worker_id"],
                 [self.workers.c.workspace_id, self.workers.c.id],
@@ -153,25 +140,45 @@ class OperationsTables:
             CheckConstraint("minutes > 0 AND minutes <= 1440"),
             CheckConstraint("hourly_rate >= 0 AND cost >= 0"),
         )
-        self.financials = Table(
-            "operations_project_financials",
+        self.attachments = Table(
+            "operations_attachments",
             self.metadata,
-            Column("workspace_id", Uuid, primary_key=True),
-            Column("project_id", Uuid, primary_key=True),
-            Column("revenue", Numeric(18, 2), nullable=False),
-            Column("non_labor_cost", Numeric(18, 2), nullable=False),
-            Column("client_receivable", Numeric(18, 2), nullable=False),
-            Column("labor_paid", Numeric(18, 2), nullable=False),
-            Column("currency", String(3), nullable=False),
+            *self._record_columns(),
+            Column("project_id", Uuid),
+            Column("summary_id", Uuid),
+            Column("name", String(200), nullable=False),
+            Column("url", Text, nullable=False),
             ForeignKeyConstraint(
                 ["workspace_id", "project_id"],
                 [self.projects.c.workspace_id, self.projects.c.id],
             ),
+            ForeignKeyConstraint(
+                ["workspace_id", "summary_id"],
+                [self.summaries.c.workspace_id, self.summaries.c.id],
+                name="fk_operations_attachments_summary",
+            ),
+            CheckConstraint(
+                "(project_id IS NULL) <> (summary_id IS NULL)",
+                name="ck_operations_attachment_parent",
+            ),
+            CheckConstraint("revision > 0"),
         )
-        self.attachments = self._project_table(
-            "operations_attachments",
-            Column("name", String(200), nullable=False),
-            Column("url", Text, nullable=False),
+        Index(
+            "ix_operations_attachments_summary",
+            self.attachments.c.workspace_id,
+            self.attachments.c.summary_id,
+        )
+        self.proposals = Table(
+            "operations_chat_proposals",
+            self.metadata,
+            Column("id", Uuid, primary_key=True),
+            Column("workspace_id", Uuid, nullable=False),
+            Column("actor_id", String(100), nullable=False),
+            Column("conversation_id", Uuid, nullable=False),
+            Column("expires_at", DateTime(timezone=True), nullable=False),
+            Column("actions", JSON, nullable=False),
+            Column("result", JSON),
+            Column("cancelled", Boolean, nullable=False),
         )
         self.audit = Table(
             "operations_audit",
